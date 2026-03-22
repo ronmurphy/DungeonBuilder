@@ -1,0 +1,108 @@
+DUNGEON BUILDER — ECONOMY & GAMEPLAY DESIGN
+=============================================
+
+CORE LOOP: Build dungeon -> Adventurers explore -> Get rated -> Earn gold -> Expand
+
+STARTUP:
+- Simple title screen: 3 save slots + New Game
+- No difficulty tiers — everyone gets the same big map and 2,000 gold
+- Currency = gold
+
+WEEKLY ADVENTURER VISIT:
+- Every week, a party of adventurers "arrives" (simulated, not physical pathfinding)
+- They rate the dungeon and loot items
+
+LOOT CHANCES (weighted per item type):
+  Coin              100%  — always taken
+  Chest              80%  — obvious treasure target
+  Trophy             70%  — shiny, valuable
+  Weapon (sword/spear) 50% — useful gear
+  Shield (round/rect)  50% — useful gear
+  Weapon Rack        40%  — bulky but worth it
+  Barrel             25%  — might have loot inside
+  Banner             15%  — decorative, low priority
+  Statue             10%  — too heavy to carry easily
+  Column/Damaged Col  5%  — who steals a column? but someone will
+  Wood Structure/Sup  5%  — structural, not interesting
+  Trap                0%  — they avoid/trigger them, don't take
+  Characters          0%  — NPCs, not lootable
+  Stairs              0%  — can't steal stairs
+  Tree                0%  — it's a tree
+
+PAYOUT: Looted items pay back 100% of their placement cost.
+
+RATING FORMULA (1-5 stars):
+  Size score:       1 point per 10 placed tiles (floors + walls + items)
+  Variety score:    5 points per unique item type used
+  Danger score:    10 points per trap, 8 points per monster (character)
+  Treasure score:   6 points per chest, 3 points per coin, 4 points per weapon/shield
+  Atmosphere score:  3 points per banner/column/statue/barrel, 2 points per wood structure
+
+STAR THRESHOLDS:
+  1 star  =   0 - 49  points (boring dungeon)
+  2 stars =  50 - 99  (decent crawl)
+  3 stars = 100 - 199 (good dungeon)
+  4 stars = 200 - 349 (great dungeon)
+  5 stars = 350+      (legendary)
+
+GOLD PAYOUT PER STAR:
+  1 star  =  50 gold
+  2 stars = 125 gold
+  3 stars = 250 gold
+  4 stars = 400 gold
+  5 stars = 600 gold
+  (Plus loot payout on top)
+
+ECONOMY BALANCE NOTES:
+- 2000 gold start makes ~2 decent rooms + a few items = 1 star early on
+- 5 star / 600 gold is minimum break-even for large dungeons
+- Traps + monsters = long-term investment (never looted, high rating points)
+- Chests/coins = high rating but get stolen, need restocking
+
+FUTURE BONUS SYSTEM (not yet coded):
+- Characters as "employees" that attract more/better adventurers
+- Emote-yes / emote-no animations for bonus reactions
+- NPCs bring in extra business, pushing gold past 600g ceiling
+- More adventurer party types (some prefer traps, some prefer treasure)
+- Room detection (enclosed walls = bonus points)
+- Dungeon reputation (rolling average of last N ratings)
+
+CHARACTER ANIMATIONS (human / orc / soldier — all share same list):
+  BASE (1-11, random on placement):
+    1.  static
+    2.  idle
+    3.  walk
+    4.  sprint
+    5.  jump
+    6.  fall
+    7.  crouch
+    8.  sit
+    9.  drive
+    10. die
+    11. pick-up
+
+  BONUS (12-13, for future bonus system):
+    12. emote-yes
+    13. emote-no
+
+  EXTRA (14-25, future use):
+    14. holding-right
+    15. holding-left
+    16. holding-both
+    17. holding-right- (variant)
+    18. holding-left-  (variant)
+    19. holding-both-  (variant)
+    20. attack-melee-
+    21. attack-melee-  (variant)
+    22. attack-kick-right
+    23. attack-kick-left
+    24. interact-right
+    25. interact-left
+
+  UNUSED (26-32, maybe later):
+    26-32. wheelchair variants
+
+INTERACTIVE ITEMS (chest / gate / trap):
+  Animations: open, close, open-close
+  Default state: closed (paused on frame 0)
+  Future: player interaction triggers open/close

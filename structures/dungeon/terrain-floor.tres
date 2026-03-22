@@ -1,0 +1,12 @@
+[gd_resource type="Resource" script_class="Structure" load_steps=3 format=3]
+
+[ext_resource type="PackedScene" path="res://models/Mini Dungeon/Models/GLB format/floor.glb" id="1_model"]
+[ext_resource type="Script" path="res://scripts/structure.gd" id="2_script"]
+
+[resource]
+script = ExtResource("2_script")
+display_name = "Dungeon Floor"
+category = "Nature"
+model = ExtResource("1_model")
+price = 0
+layer = 0
