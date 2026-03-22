@@ -1,0 +1,201 @@
+[gd_scene load_steps=19 format=3 uid="uid://vgwrcfy1qawf"]
+
+[ext_resource type="Script" uid="uid://76g8ejmdibal" path="res://scripts/builder.gd" id="1_jybm7"]
+[ext_resource type="Environment" uid="uid://jbptgqvstei3" path="res://scenes/main-environment.tres" id="1_yndf3"]
+
+[ext_resource type="Texture2D" uid="uid://cbk07cxgshg26" path="res://sprites/selector.png" id="4_wr1wv"]
+
+[ext_resource type="Script" uid="uid://dec71yx4xpg2c" path="res://scripts/view.gd" id="8_yovpv"]
+
+[ext_resource type="FontFile" uid="uid://d0cxd77jybrcn" path="res://fonts/lilita_one_regular.ttf" id="16_vlub6"]
+[ext_resource type="Texture2D" uid="uid://bng0d1sou7c8a" path="res://sprites/coin.png" id="17_cjamx"]
+[ext_resource type="Texture2D" uid="uid://ciwbdik3tmxtp" path="res://sprites/instructions.png" id="22_pm3ni"]
+[ext_resource type="Script" path="res://scripts/building_picker.gd" id="25_picker"]
+[ext_resource type="Script" path="res://scripts/tax_report.gd" id="26_taxreport"]
+[ext_resource type="Script" path="res://scripts/help_overlay.gd" id="30_helpoverlay"]
+[ext_resource type="Texture2D" path="res://graphics/notepad.png" id="27_notepad"]
+[ext_resource type="Texture2D" path="res://graphics/information.png" id="28_info"]
+[ext_resource type="Texture2D" path="res://graphics/tokens.png" id="29_tokens"]
+[ext_resource type="Texture2D" path="res://graphics/pawns.png" id="31_pawns"]
+[ext_resource type="Script" path="res://scripts/weather.gd" id="32_weather"]
+[ext_resource type="Script" path="res://scripts/day_cycle.gd" id="33_daycycle"]
+
+[sub_resource type="LabelSettings" id="LabelSettings_q176i"]
+font = ExtResource("16_vlub6")
+font_size = 18
+shadow_color = Color(0, 0, 0, 0.392157)
+
+[node name="Main" type="Node3D"]
+
+[node name="Builder" type="Node3D" parent="." node_paths=PackedStringArray("selector", "selector_container", "view_camera", "view_node", "gridmap", "decoration_gridmap", "items_gridmap", "terrain_gridmap", "underlay_gridmap", "cash_display", "date_display", "week_clock", "report_panel", "building_picker", "help_panel")]
+script = ExtResource("1_jybm7")
+
+selector = NodePath("Selector")
+selector_container = NodePath("Selector/Container")
+view_camera = NodePath("../View/Camera")
+view_node = NodePath("../View")
+gridmap = NodePath("../GridMap")
+decoration_gridmap = NodePath("../DecorationGridMap")
+items_gridmap = NodePath("../ItemsGridMap")
+terrain_gridmap = NodePath("../TerrainGridMap")
+underlay_gridmap = NodePath("../UnderlayGridMap")
+cash_display = NodePath("../CanvasLayer/Top/Cash")
+date_display = NodePath("../CanvasLayer/Top/Date")
+week_clock = NodePath("../CanvasLayer/Top/WeekClock")
+report_panel = NodePath("../CanvasLayer/TaxReport")
+building_picker = NodePath("../CanvasLayer/BuildingPicker")
+help_panel = NodePath("../CanvasLayer/HelpOverlay")
+
+
+[node name="Selector" type="Node3D" parent="Builder"]
+
+[node name="Sprite" type="Sprite3D" parent="Builder/Selector"]
+transform = Transform3D(1, 0, 0, 0, -4.37114e-08, -1, 0, 1, -4.37114e-08, 0, 0.06, 0)
+texture = ExtResource("4_wr1wv")
+
+[node name="Container" type="Node3D" parent="Builder/Selector"]
+
+[node name="View" type="Node3D" parent="."]
+transform = Transform3D(0.707107, -0.40558, 0.579228, 0, 0.819152, 0.573576, -0.707107, -0.40558, 0.579228, 0, 0, 0)
+script = ExtResource("8_yovpv")
+
+[node name="Camera" type="Camera3D" parent="View"]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0, 30)
+environment = ExtResource("1_yndf3")
+fov = 20.0
+
+[node name="UnderlayGridMap" type="GridMap" parent="."]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0, -0.1, 0)
+cell_size = Vector3(1, 1, 1)
+cell_center_x = false
+cell_center_y = false
+cell_center_z = false
+
+[node name="GridMap" type="GridMap" parent="."]
+cell_size = Vector3(1, 1, 1)
+cell_center_x = false
+cell_center_y = false
+cell_center_z = false
+
+[node name="DecorationGridMap" type="GridMap" parent="."]
+cell_size = Vector3(1, 1, 1)
+cell_center_x = false
+cell_center_y = false
+cell_center_z = false
+
+[node name="ItemsGridMap" type="GridMap" parent="."]
+cell_size = Vector3(1, 1, 1)
+cell_center_x = false
+cell_center_y = false
+cell_center_z = false
+
+[node name="TerrainGridMap" type="GridMap" parent="."]
+cell_size = Vector3(1, 1, 1)
+cell_center_x = false
+cell_center_y = false
+cell_center_z = false
+
+[node name="Sun" type="DirectionalLight3D" parent="."]
+transform = Transform3D(-0.422618, -0.694272, 0.582563, 0, 0.642788, 0.766044, -0.906308, 0.323744, -0.271654, 0, 0, 0)
+shadow_enabled = true
+shadow_opacity = 0.75
+
+[node name="CanvasLayer" type="CanvasLayer" parent="."]
+
+[node name="Top" type="Control" parent="CanvasLayer"]
+layout_mode = 3
+anchor_left = 0.0
+anchor_right = 1.0
+anchor_top = 0.0
+anchor_bottom = 0.0
+offset_left = 0.0
+offset_top = 0.0
+offset_right = 0.0
+offset_bottom = 60.0
+
+[node name="CashIcon" type="TextureRect" parent="CanvasLayer/Top"]
+layout_mode = 0
+offset_left = 12.0
+offset_top = 10.0
+offset_right = 30.0
+offset_bottom = 28.0
+expand_mode = 1
+stretch_mode = 5
+texture = ExtResource("29_tokens")
+
+[node name="Cash" type="Label" parent="CanvasLayer/Top"]
+layout_mode = 0
+offset_left = 34.0
+offset_top = 8.0
+offset_right = 200.0
+offset_bottom = 36.0
+text = "$10,000"
+label_settings = SubResource("LabelSettings_q176i")
+
+[node name="WeekClock" type="TextureRect" parent="CanvasLayer/Top"]
+layout_mode = 0
+offset_left = 210.0
+offset_top = 10.0
+offset_right = 228.0
+offset_bottom = 28.0
+expand_mode = 1
+stretch_mode = 5
+
+[node name="Date" type="Label" parent="CanvasLayer/Top"]
+layout_mode = 0
+offset_left = 234.0
+offset_top = 8.0
+offset_right = 760.0
+offset_bottom = 36.0
+text = "Year 1  ·  Month 1  ·  Week 1  ·  Day 1"
+label_settings = SubResource("LabelSettings_q176i")
+
+
+
+[node name="WeatherLabel" type="Label" parent="CanvasLayer/Top"]
+layout_mode = 0
+offset_left = 1000.0
+offset_top = 8.0
+offset_right = 1200.0
+offset_bottom = 36.0
+text = ""
+label_settings = SubResource("LabelSettings_q176i")
+
+[node name="Bottom" type="Control" parent="CanvasLayer"]
+layout_mode = 3
+anchors_preset = 2
+anchor_top = 1.0
+anchor_bottom = 1.0
+offset_top = -648.0
+offset_bottom = -648.0
+grow_vertical = 0
+
+[node name="Instructions" type="TextureRect" parent="CanvasLayer/Bottom"]
+layout_mode = 0
+offset_left = 16.0
+offset_top = 400.0
+offset_right = 336.0
+offset_bottom = 912.0
+scale = Vector2(0.5, 0.5)
+visible = false
+texture = ExtResource("22_pm3ni")
+
+[node name="TaxReport" type="Control" parent="CanvasLayer"]
+script = ExtResource("26_taxreport")
+
+[node name="BuildingPicker" type="Control" parent="CanvasLayer"]
+script = ExtResource("25_picker")
+
+[node name="HelpOverlay" type="Control" parent="CanvasLayer"]
+script = ExtResource("30_helpoverlay")
+
+[node name="Weather" type="Node" parent="." node_paths=PackedStringArray("weather_label")]
+script = ExtResource("32_weather")
+weather_label = NodePath("../CanvasLayer/Top/WeatherLabel")
+
+[node name="DayCycle" type="Node" parent="." node_paths=PackedStringArray("camera", "sun")]
+script = ExtResource("33_daycycle")
+camera = NodePath("../View/Camera")
+sun = NodePath("../Sun")
+
+# AudioStreamPlayer removed — no ambience.ogg yet

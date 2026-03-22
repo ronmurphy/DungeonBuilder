@@ -1,0 +1,6 @@
+[gd_scene load_steps=2 format=3]
+
+[ext_resource type="Script" path="res://scripts/startup_dialog.gd" id="1_dlg"]
+
+[node name="StartupDialog" type="Node"]
+script = ExtResource("1_dlg")
