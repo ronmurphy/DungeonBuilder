@@ -4,16 +4,15 @@ importer="texture"
 type="CompressedTexture2D"
 uid="uid://dfrxjm521onnu"
 path.s3tc="res://.godot/imported/colormap.png-93b3b0b85eafd329a42118b0801325f1.s3tc.ctex"
-path.etc2="res://.godot/imported/colormap.png-93b3b0b85eafd329a42118b0801325f1.etc2.ctex"
 metadata={
-"imported_formats": ["s3tc_bptc", "etc2_astc"],
+"imported_formats": ["s3tc_bptc"],
 "vram_texture": true
 }
 
 [deps]
 
 source_file="res://models/Mini Dungeon/Models/GLB format/Textures/colormap.png"
-dest_files=["res://.godot/imported/colormap.png-93b3b0b85eafd329a42118b0801325f1.s3tc.ctex", "res://.godot/imported/colormap.png-93b3b0b85eafd329a42118b0801325f1.etc2.ctex"]
+dest_files=["res://.godot/imported/colormap.png-93b3b0b85eafd329a42118b0801325f1.s3tc.ctex"]
 
 [params]
 

@@ -10,6 +10,8 @@ const PANEL_H: float = 560.0
 
 # Dungeon Stats tab
 var _stats_labels: Dictionary = {}
+var _stats_vbox: VBoxContainer       # reference for adding themed room rows dynamically
+var _themed_rows: Array[Node] = []   # track dynamic rows for cleanup
 
 # Visit History tab
 var _history_rows: VBoxContainer
@@ -102,6 +104,7 @@ func _build_stats_tab(tabs: TabContainer) -> void:
 	vbox.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	vbox.add_theme_constant_override("separation", 4)
 	scroll.add_child(vbox)
+	_stats_vbox = vbox
 
 	# Rating section
 	_add_section_header(vbox, "Rating")
@@ -182,6 +185,22 @@ func _add_stat_row(parent: VBoxContainer, label_text: String, key: String) -> vo
 	_stats_labels[key] = val_lbl
 
 
+func _add_stat_row_direct(parent: VBoxContainer, label_text: String, value_text: String) -> void:
+	var hbox := HBoxContainer.new()
+	parent.add_child(hbox)
+
+	var name_lbl := Label.new()
+	name_lbl.text = "  " + label_text
+	name_lbl.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	hbox.add_child(name_lbl)
+
+	var val_lbl := Label.new()
+	val_lbl.text = value_text
+	val_lbl.horizontal_alignment = HORIZONTAL_ALIGNMENT_RIGHT
+	val_lbl.custom_minimum_size = Vector2(120, 0)
+	hbox.add_child(val_lbl)
+
+
 # Called by builder.gd when the report button is pressed
 func show_dungeon_report(stats: Dictionary, visit_history: Array) -> void:
 	_build_ui()
@@ -213,6 +232,41 @@ func show_dungeon_report(stats: Dictionary, visit_history: Array) -> void:
 			lbl.text = stats.get("next_party_type", "—")
 		else:
 			lbl.text = str(stats.get(key, 0))
+
+	# Update themed room rows (dynamic — depends on current stats)
+	for row in _themed_rows:
+		if is_instance_valid(row):
+			row.queue_free()
+	_themed_rows.clear()
+	if stats.has("themed_rooms") and _stats_vbox:
+		var themed: Dictionary = stats["themed_rooms"]
+		if not themed.is_empty():
+			# Insert after "Treasure rooms" row — find its index
+			var insert_idx: int = _stats_vbox.get_child_count()  # fallback: append
+			for i in range(_stats_vbox.get_child_count()):
+				var child := _stats_vbox.get_child(i)
+				if child is HBoxContainer:
+					var first := child.get_child(0)
+					if first is Label and first.text == "Treasure rooms":
+						insert_idx = i + 1
+						break
+			for theme_name in themed:
+				var hbox := HBoxContainer.new()
+				var name_lbl := Label.new()
+				name_lbl.text = "  " + theme_name + " rooms"
+				name_lbl.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+				name_lbl.add_theme_color_override("font_color", Color(0.7, 0.85, 1.0))
+				hbox.add_child(name_lbl)
+				var val_lbl := Label.new()
+				val_lbl.text = str(themed[theme_name])
+				val_lbl.horizontal_alignment = HORIZONTAL_ALIGNMENT_RIGHT
+				val_lbl.custom_minimum_size = Vector2(120, 0)
+				val_lbl.add_theme_color_override("font_color", Color(0.7, 0.85, 1.0))
+				hbox.add_child(val_lbl)
+				_stats_vbox.add_child(hbox)
+				_stats_vbox.move_child(hbox, insert_idx)
+				_themed_rows.append(hbox)
+				insert_idx += 1
 
 	# Update visit history
 	for child in _history_rows.get_children():

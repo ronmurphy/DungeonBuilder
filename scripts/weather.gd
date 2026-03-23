@@ -30,19 +30,10 @@ var _canvas:         CanvasLayer    = null
 
 
 func _ready() -> void:
-	# Layer 0 = in front of the 3D world, behind the HUD (which sits at layer 1)
-	_canvas = CanvasLayer.new()
-	_canvas.layer = 0
-	add_child(_canvas)
-	_build_particles()
+	# Dungeon is underground — no weather effects
 	if weather_label:
 		weather_label.visible = false
-
-
-func _process(_delta: float) -> void:
-	if Global.current_day != _last_day:
-		_last_day = Global.current_day
-		_roll_weather()
+	set_process(false)
 
 
 # ── Month → weather probabilities ──────────────────────────────────────────────

@@ -66,6 +66,12 @@ var _saved_cam_zoom: float
 var _orbit_center: Vector3
 var _pending_visit_stats: Dictionary = {}  # stored until intermission ends
 
+# Lighting state saved/restored for intermission darkness
+var _saved_sun_energy: float = 1.0
+var _saved_ambient_energy: float = 0.75
+var _sun_node: DirectionalLight3D = null
+var _env: Environment = null
+
 # Loot chances per display_name keyword → chance (0.0–1.0)
 const LOOT_CHANCES: Dictionary = {
 	"Coin": 1.0,
@@ -162,6 +168,47 @@ const ROOM_ENCLOSE_PCT: float = 0.75    # 75% of border must be walls/gates
 const ROOM_POINTS: int = 15             # rating points per room
 const TREASURE_ROOM_BONUS: int = 10     # extra points if room has treasure
 
+# Room theme definitions — keyword lists that identify a theme
+const ROOM_THEMES: Dictionary = {
+	"Armory":   { "keywords": ["Sword", "Spear", "Shield", "Weapon Rack"], "min": 2, "bonus": 20 },
+	"Treasury": { "keywords": ["Chest", "Coin", "Barrel"],                "min": 2, "bonus": 25 },
+	"Barracks": { "keywords": ["Human", "Orc", "Soldier"],                "min": 2, "bonus": 20 },
+	"Trap Room":{ "keywords": ["Trap"],                                   "min": 2, "bonus": 15 },
+	"Gallery":  { "keywords": ["Statue", "Banner", "Column"],             "min": 2, "bonus": 15 },
+}
+# Party-type theme affinity — multiplier on the theme bonus
+const PARTY_THEME_AFFINITY: Dictionary = {
+	# Warriors love Barracks, hate Gallery
+	PartyType.WARRIORS: { "Barracks": 2.0, "Armory": 1.5, "Trap Room": 1.2, "Treasury": 0.8, "Gallery": 0.5 },
+	# Rogues love Treasury, like Trap Rooms (to disarm)
+	PartyType.ROGUES:   { "Treasury": 2.0, "Trap Room": 1.5, "Armory": 1.0, "Barracks": 0.8, "Gallery": 0.5 },
+	# Scholars love Gallery, study everything
+	PartyType.SCHOLARS: { "Gallery": 2.5, "Trap Room": 1.5, "Treasury": 1.0, "Armory": 1.0, "Barracks": 0.8 },
+}
+
+# ── Travelling Merchant — prefab themed rooms ────────────────────────────────
+const MERCHANT_CHANCE: float = 0.30           # 30% chance per week
+const MERCHANT_PRICE: int = 1000
+const PREFAB_MIN_SIZE: int = 5
+const PREFAB_MAX_SIZE: int = 15
+const PREFAB_THEMES: Array[String] = ["Armory", "Treasury", "Barracks", "Trap Room", "Gallery"]
+# Items to place inside each themed room (display_name keywords)
+const PREFAB_ITEMS: Dictionary = {
+	"Armory":    ["Dungeon Sword", "Dungeon Spear", "Rectangle Shield", "Round Shield", "Weapon Rack"],
+	"Treasury":  ["Chest", "Coin", "Coin", "Barrel", "Barrel"],
+	"Barracks":  ["Orc", "Orc", "Soldier", "Human"],
+	"Trap Room": ["Trap", "Trap", "Stones", "Rocks"],
+	"Gallery":   ["Statue", "Dungeon Banner", "Arena Banner", "Dungeon Column", "Arena Column"],
+}
+
+var _merchant_offered_this_week: bool = false
+var _prefab_placing: bool = false             # true while placing a purchased prefab
+var _prefab_theme: String = ""                # theme of the prefab being placed
+var _prefab_w: int = 0                        # width (x)
+var _prefab_h: int = 0                        # height (z)
+var _prefab_outline: Node3D = null            # visual preview outline
+var _prefab_valid: bool = false               # true if current position is clear
+
 # Terrain
 var _terrain_noise: FastNoiseLite = null
 var _terrain_mesh_ids: Dictionary = {}     # glb basename  -> mesh library id
@@ -175,6 +222,8 @@ var _struct_variation_ids: Array = []       # per-structure: Array of mesh libra
 var _pending_mid: int = -1                  # current mesh library ID to place (base or variant)
 var _pending_variation_tex: Texture2D = null # texture override for preview cursor
 var _pending_variation_idx: int = 0         # current index into variation list
+var _global_palette_idx: int = 0           # global palette: 0=base, 1=var_a, 2=var_b, etc.
+var _max_palette_count: int = 1            # total number of palettes available (computed at startup)
 var _variation_tex_cache: Dictionary = {}   # model texture dir -> Array[Texture2D]
 var _variation_mat_cache: Dictionary = {}   # "mat_id:tex_path" -> Material (cached for GPU batching)
 const _NO_VARIATION_CATEGORIES: Array[String] = ["Nature"]  # categories that skip texture variations
@@ -227,6 +276,7 @@ var _normal_cash_color: Color = Color.WHITE             # stored on ready
 func _ready():
 
 	_load_structures()
+	_setup_font_fallback()
 
 	plane = Plane(Vector3.UP, Vector3.ZERO)
 
@@ -284,6 +334,24 @@ func _ready():
 	_update_date_display()
 
 
+func _setup_font_fallback() -> void:
+	# Add Noto Emoji as a fallback so ★ ☆ 🏆 etc. render on web exports
+	var emoji_path := "res://fonts/NotoEmoji-Regular.ttf"
+	if not ResourceLoader.exists(emoji_path):
+		push_warning("[Builder] Noto Emoji font not found at %s — emoji may not render on web" % emoji_path)
+		return
+	var emoji_font: FontFile = load(emoji_path)
+	var main_font_path := "res://fonts/lilita_one_regular.ttf"
+	if ResourceLoader.exists(main_font_path):
+		var main_font: FontFile = load(main_font_path)
+		if emoji_font not in main_font.fallbacks:
+			main_font.fallbacks.append(emoji_font)
+	# Also set as the default theme fallback so ALL labels pick it up
+	var default_font := ThemeDB.fallback_font
+	if default_font is FontFile and emoji_font not in default_font.fallbacks:
+		default_font.fallbacks.append(emoji_font)
+
+
 func _process(delta):
 
 	# During intermission, only process the orbit — block all input & time
@@ -316,6 +384,18 @@ func _process(delta):
 			last_gridmap_position = Vector3(gx, stack_y, gz)
 
 	selector.position = lerp(selector.position, last_gridmap_position, min(delta * 40, 1.0))
+
+	# Prefab placement mode — update outline, handle clicks, block normal build
+	if _prefab_placing:
+		var gx: int = int(last_gridmap_position.x)
+		var gz: int = int(last_gridmap_position.z)
+		_update_prefab_outline(gx, gz)
+		if not _is_over_picker():
+			if Input.is_action_just_pressed("build"):
+				_place_prefab(gx, gz)
+			elif Input.is_action_just_pressed("demolish"):
+				_cancel_prefab()
+		return
 
 	action_build(last_gridmap_position)
 	action_demolish(last_gridmap_position)
@@ -392,7 +472,12 @@ func _build_mesh_libraries() -> void:
 			var m: Mesh = lib.get_item_mesh(mid)
 			if m:
 				_mesh_heights[mid] = m.get_aabb().size.y
-	print("[Builder] Texture variations built: ", _struct_variation_ids.filter(func(a): return a.size() > 1).size(), " structures with variants")
+	# Compute max palette count across all structures
+	_max_palette_count = 1
+	for ids in _struct_variation_ids:
+		if ids.size() > _max_palette_count:
+			_max_palette_count = ids.size()
+	print("[Builder] Texture variations built: ", _struct_variation_ids.filter(func(a): return a.size() > 1).size(), " structures with variants, max palette count: ", _max_palette_count)
 
 
 # Find variation texture files for a structure's model pack
@@ -537,6 +622,10 @@ func _input(event: InputEvent) -> void:
 			return  # let help_overlay.gd handle it
 		if report_panel and report_panel.visible:
 			return  # let tax_report.gd handle it
+		if _prefab_placing:
+			_cancel_prefab()
+			get_viewport().set_input_as_handled()
+			return
 		if _placing:
 			_set_placing(false)
 			get_viewport().set_input_as_handled()
@@ -755,6 +844,105 @@ func _update_preview_variation() -> void:
 						(new_mat as StandardMaterial3D).albedo_texture = _pending_variation_tex
 					mi.set_surface_override_material(surf_idx, new_mat)
 			break  # only process the first MeshInstance3D
+
+
+# ── Global palette swap (P key) ──────────────────────────────────────────────
+
+func _cycle_global_palette() -> void:
+	_global_palette_idx = (_global_palette_idx + 1) % _max_palette_count
+	var palette_name: String
+	if _global_palette_idx == 0:
+		palette_name = "Default"
+	else:
+		palette_name = "Variation " + ["A", "B", "C", "D"][_global_palette_idx - 1] if _global_palette_idx <= 4 else "Variation %d" % _global_palette_idx
+
+	# Swap every cell in all three gridmaps
+	_swap_gridmap_palette(gridmap, _base_id_to_struct)
+	_swap_gridmap_palette(decoration_gridmap, _deco_id_to_struct)
+	_swap_gridmap_palette(items_gridmap, _item_id_to_struct)
+
+	# Swap animated instances (characters, chests, traps, etc.)
+	_swap_animated_palette()
+
+	Audio.play("sounds/toggle.ogg", -30)
+	Toast.notify("Palette: %s" % palette_name, _SAVE_ICON)
+	print("[Builder] Global palette -> %s (idx %d)" % [palette_name, _global_palette_idx])
+
+
+func _swap_gridmap_palette(gmap: GridMap, id_to_struct: Dictionary) -> void:
+	if gmap == null:
+		return
+	for cell in gmap.get_used_cells():
+		var mid: int = gmap.get_cell_item(cell)
+		if mid == -1:
+			continue
+		# Find the structure index for this mesh ID
+		var s_idx: int = -1
+		if mid in id_to_struct:
+			s_idx = id_to_struct[mid]
+		else:
+			# Might be a variation ID — search all variation arrays
+			for i in range(_struct_variation_ids.size()):
+				if mid in _struct_variation_ids[i]:
+					s_idx = i
+					break
+		if s_idx == -1:
+			continue
+
+		var ids: Array = _struct_variation_ids[s_idx]
+		if ids.size() <= 1:
+			continue  # no variations for this structure
+
+		# Pick the target variation — wrap if this structure has fewer variations
+		var target_idx: int = _global_palette_idx % ids.size()
+		var new_mid: int = ids[target_idx]
+		if new_mid != mid:
+			var ori: int = gmap.get_cell_item_orientation(cell)
+			gmap.set_cell_item(cell, new_mid, ori)
+
+
+func _swap_animated_palette() -> void:
+	# Get the target variation texture
+	var target_tex: Texture2D = null
+	if _global_palette_idx > 0:
+		# All model packs share the same variation textures, so grab from any structure
+		for i in range(structures.size()):
+			var textures: Array = _get_variation_textures(structures[i])
+			if not textures.is_empty():
+				var tex_idx: int = (_global_palette_idx - 1) % textures.size()
+				target_tex = textures[tex_idx]
+				break
+
+	for pos in _animated_instances:
+		var instance: Node3D = _animated_instances[pos]
+		if not is_instance_valid(instance):
+			continue
+		# Apply or clear texture override on all MeshInstance3D children (recursive)
+		_apply_palette_to_node(instance, target_tex)
+
+
+func _apply_palette_to_node(node: Node3D, tex: Texture2D) -> void:
+	for child in node.get_children():
+		if child is MeshInstance3D:
+			var mi := child as MeshInstance3D
+			if tex == null:
+				# Clear overrides — back to base texture
+				for surf_idx in mi.get_surface_override_material_count():
+					mi.set_surface_override_material(surf_idx, null)
+			else:
+				for surf_idx in mi.mesh.get_surface_count():
+					var mat := mi.get_active_material(surf_idx)
+					if mat == null:
+						continue
+					var cache_key: String = str(mat.get_instance_id()) + ":" + tex.resource_path
+					if not _variation_mat_cache.has(cache_key):
+						var new_mat := mat.duplicate()
+						if new_mat is StandardMaterial3D:
+							(new_mat as StandardMaterial3D).albedo_texture = tex
+						_variation_mat_cache[cache_key] = new_mat
+					mi.set_surface_override_material(surf_idx, _variation_mat_cache[cache_key])
+		elif child is Node3D:
+			_apply_palette_to_node(child, tex)
 
 
 # ── Vertical stacking helpers ──────────────────────────────────────────────────
@@ -1122,32 +1310,124 @@ func _generate_starter_dungeon() -> void:
 	var x2: int = x1 + dw - 1
 	var z2: int = z1 + dh - 1
 
-	# Find required structure index by display name
+	# Find required structure indices by display name
 	var dungeon_idx: int = _find_struct_by_name("Dungeon Wall")
+	var narrow_idx: int = _find_struct_by_name("Narrow Wall")
 
 	if dungeon_idx == -1:
 		push_warning("[BSP] Missing Dungeon Wall structure — skipping dungeon generation")
 		return
+	if narrow_idx == -1:
+		push_warning("[BSP] Missing Narrow Wall structure — falling back to Dungeon Wall only")
+		narrow_idx = dungeon_idx
 
 	# Build BSP tree
 	var root := _bsp_node(x1, z1, x2, z2)
 	_bsp_split(root, rng)
 
-	# Build wall grid: Vector2i(x, z) -> "wall" or "opening"
+	# Build wall grid: Vector2i(x, z) -> "wall_h" / "wall_v" / "opening"
 	var grid: Dictionary = {}
 	_bsp_mark_walls(root, grid)
 	_bsp_mark_openings(root, grid, rng)
 
-	# Place only walls — openings are left empty (no structure)
+	# Mesh IDs for each wall type
 	var dungeon_mid: int = _struct_mesh_id[dungeon_idx]
+	var narrow_mid: int = _struct_mesh_id[narrow_idx]
+	var walls_placed: int = 0
+	var intersections: int = 0
 
 	for pos in grid:
-		if grid[pos] == "wall":
-			decoration_gridmap.set_cell_item(Vector3i(pos.x, 0, pos.y), dungeon_mid, 0)
+		var val: String = grid[pos]
+		if not val.begins_with("wall"):
+			continue
+
+		# Check neighbors to classify: intersection vs straight segment
+		var val_n: String = grid.get(Vector2i(pos.x, pos.y - 1), "")
+		var val_s: String = grid.get(Vector2i(pos.x, pos.y + 1), "")
+		var val_e: String = grid.get(Vector2i(pos.x + 1, pos.y), "")
+		var val_w: String = grid.get(Vector2i(pos.x - 1, pos.y), "")
+
+		var has_n: bool = val_n.begins_with("wall")
+		var has_s: bool = val_s.begins_with("wall")
+		var has_e: bool = val_e.begins_with("wall")
+		var has_w: bool = val_w.begins_with("wall")
+
+		# Count wall neighbors on each axis
+		var axis_x: int = int(has_e) + int(has_w)  # east-west neighbors
+		var axis_z: int = int(has_n) + int(has_s)  # north-south neighbors
+
+		# Adjacent to an opening = doorway frame → use intersection piece
+		var near_opening: bool = val_n == "opening" or val_s == "opening" or val_e == "opening" or val_w == "opening"
+
+		# Intersection = corner/T/+ junction, OR doorway frame (next to an opening)
+		var is_intersection: bool = (axis_x > 0 and axis_z > 0) or near_opening
+
+		var cell := Vector3i(pos.x, 0, pos.y)
+
+		if is_intersection:
+			# Dungeon Wall for corners/intersections (looks same on all sides)
+			decoration_gridmap.set_cell_item(cell, dungeon_mid, 0)
+			intersections += 1
+		else:
+			# Narrow Wall for straight sections — orient so textured face is inward
+			# Narrow Wall: N/S faces are textured, E/W faces are dirt/back
+			# So for a horizontal run (wall_h): textured N/S faces are correct → ori 0
+			# For a vertical run (wall_v): need 90° rotation → ori 10
+			#
+			# Additionally, check which side has open space to face the nice side inward
+			var open_n: bool = not grid.get(Vector2i(pos.x, pos.y - 1), "").begins_with("wall")
+			var open_s: bool = not grid.get(Vector2i(pos.x, pos.y + 1), "").begins_with("wall")
+			var open_e: bool = not grid.get(Vector2i(pos.x + 1, pos.y), "").begins_with("wall")
+			var open_w: bool = not grid.get(Vector2i(pos.x - 1, pos.y), "").begins_with("wall")
+
+			if val == "wall_h" or axis_x > 0:
+				# Horizontal run — N/S faces show, check if we need to flip 180°
+				# Default (0): textured side faces north (-Z)
+				# Flipped (22): textured side faces south (+Z)
+				if open_s and not open_n:
+					decoration_gridmap.set_cell_item(cell, narrow_mid, 22)  # face south
+				else:
+					decoration_gridmap.set_cell_item(cell, narrow_mid, 0)   # face north
+			else:
+				# Vertical run — rotate 90° so textured side faces E or W
+				# 270° (16): textured side faces east (+X)
+				# 90° (10): textured side faces west (-X)
+				if open_w and not open_e:
+					decoration_gridmap.set_cell_item(cell, narrow_mid, 10)  # face west
+				else:
+					decoration_gridmap.set_cell_item(cell, narrow_mid, 16)  # face east
+		walls_placed += 1
 
 	# Rebuild navigation wall map so pathfinding works immediately
 	_nav_rebuild()
-	print("[BSP] Starter dungeon generated: %dx%d at (%d,%d)→(%d,%d), %d wall cells" % [dw, dh, x1, z1, x2, z2, grid.size()])
+	print("[BSP] Starter dungeon: %dx%d, %d walls (%d intersections, %d narrow)" % [dw, dh, walls_placed, intersections, walls_placed - intersections])
+
+	# Debug map — shows wall types and orientations
+	# I = intersection (Dungeon Wall), H = narrow horizontal, V = narrow vertical, O = opening, . = open
+	print("[BSP] === DUNGEON MAP (I=intersection, H=narrow-h, V=narrow-v, O=opening, .=open) ===")
+	for z in range(z1, z2 + 1):
+		var row: String = "[Map z=%2d] " % z
+		for x in range(x1, x2 + 1):
+			var key := Vector2i(x, z)
+			var val: String = grid.get(key, "")
+			if val == "opening":
+				row += "O "
+			elif val.begins_with("wall"):
+				# Check what was actually placed — intersection or narrow?
+				var hn: bool = grid.get(Vector2i(x, z - 1), "").begins_with("wall")
+				var hs: bool = grid.get(Vector2i(x, z + 1), "").begins_with("wall")
+				var he: bool = grid.get(Vector2i(x + 1, z), "").begins_with("wall")
+				var hw: bool = grid.get(Vector2i(x - 1, z), "").begins_with("wall")
+				if (int(he) + int(hw)) > 0 and (int(hn) + int(hs)) > 0:
+					row += "I "  # intersection
+				elif val == "wall_h" or (int(he) + int(hw)) > 0:
+					row += "H "  # narrow horizontal
+				else:
+					row += "V "  # narrow vertical
+			else:
+				row += ". "
+		print(row)
+	print("[BSP] === END MAP ===")
 
 
 func _find_struct_by_name(display_name: String) -> int:
@@ -1155,6 +1435,283 @@ func _find_struct_by_name(display_name: String) -> int:
 		if structures[i].display_name == display_name:
 			return i
 	return -1
+
+
+# ── Travelling Merchant ───────────────────────────────────────────────────────
+
+func _show_merchant_dialog() -> void:
+	var theme_a: String = PREFAB_THEMES[randi() % PREFAB_THEMES.size()]
+	var theme_b: String = PREFAB_THEMES[randi() % PREFAB_THEMES.size()]
+	var size_a := Vector2i(randi_range(PREFAB_MIN_SIZE, PREFAB_MAX_SIZE), randi_range(PREFAB_MIN_SIZE, PREFAB_MAX_SIZE))
+	var size_b := Vector2i(randi_range(PREFAB_MIN_SIZE, PREFAB_MAX_SIZE), randi_range(PREFAB_MIN_SIZE, PREFAB_MAX_SIZE))
+
+	var dialog := AcceptDialog.new()
+	dialog.title = "Travelling Merchant"
+	dialog.ok_button_text = "No thanks"
+
+	var vbox := VBoxContainer.new()
+	var msg := Label.new()
+	msg.text = "A merchant offers two mystery prefab rooms for %dg each:" % MERCHANT_PRICE
+	msg.autowrap_mode = TextServer.AUTOWRAP_WORD
+	vbox.add_child(msg)
+
+	var spacer := Control.new()
+	spacer.custom_minimum_size = Vector2(0, 8)
+	vbox.add_child(spacer)
+
+	var hbox := HBoxContainer.new()
+	hbox.alignment = BoxContainer.ALIGNMENT_CENTER
+
+	var btn_a := Button.new()
+	btn_a.text = "Prefab Room A (%dx%d)" % [size_a.x, size_a.y]
+	btn_a.custom_minimum_size = Vector2(160, 40)
+	btn_a.pressed.connect(func():
+		dialog.hide()
+		dialog.queue_free()
+		_purchase_prefab(theme_a, size_a.x, size_a.y)
+	)
+	hbox.add_child(btn_a)
+
+	var gap := Control.new()
+	gap.custom_minimum_size = Vector2(16, 0)
+	hbox.add_child(gap)
+
+	var btn_b := Button.new()
+	btn_b.text = "Prefab Room B (%dx%d)" % [size_b.x, size_b.y]
+	btn_b.custom_minimum_size = Vector2(160, 40)
+	btn_b.pressed.connect(func():
+		dialog.hide()
+		dialog.queue_free()
+		_purchase_prefab(theme_b, size_b.x, size_b.y)
+	)
+	hbox.add_child(btn_b)
+
+	vbox.add_child(hbox)
+	dialog.add_child(vbox)
+	add_child(dialog)
+	dialog.popup_centered(Vector2i(400, 0))
+	Toast.notify("A travelling merchant has arrived!", _AWARD_ICON)
+
+
+func _purchase_prefab(theme: String, w: int, h: int) -> void:
+	if map.cash < MERCHANT_PRICE and not _freebuild:
+		Toast.notify("Not enough gold! Need %dg" % MERCHANT_PRICE, _WARN_ICON)
+		return
+	if not _freebuild:
+		map.cash -= MERCHANT_PRICE
+		update_cash()
+
+	_prefab_theme = theme
+	_prefab_w = w
+	_prefab_h = h
+	_prefab_placing = true
+
+	# Deselect any held structure
+	if _placing:
+		_set_placing(false)
+
+	# Create outline preview
+	_create_prefab_outline()
+	Toast.notify("Place your %dx%d mystery room — click to build, right-click to cancel" % [w, h], _SAVE_ICON)
+	print("[Merchant] Purchased prefab: %s (%dx%d)" % [theme, w, h])
+
+
+func _create_prefab_outline() -> void:
+	if _prefab_outline:
+		_prefab_outline.queue_free()
+
+	_prefab_outline = Node3D.new()
+	add_child(_prefab_outline)
+
+	# Build a flat colored rectangle showing the room footprint
+	var mat := StandardMaterial3D.new()
+	mat.albedo_color = Color(0.2, 0.8, 0.2, 0.35)  # green = valid
+	mat.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA
+	mat.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
+	mat.cull_mode = BaseMaterial3D.CULL_DISABLED
+
+	# Floor plane
+	var plane_mesh := PlaneMesh.new()
+	plane_mesh.size = Vector2(_prefab_w, _prefab_h)
+	var floor_inst := MeshInstance3D.new()
+	floor_inst.mesh = plane_mesh
+	floor_inst.material_override = mat
+	floor_inst.position = Vector3(_prefab_w / 2.0 - 0.5, 0.05, _prefab_h / 2.0 - 0.5)
+	_prefab_outline.add_child(floor_inst)
+
+	# Border posts at corners (tall thin boxes)
+	var post_mat := StandardMaterial3D.new()
+	post_mat.albedo_color = Color(0.3, 1.0, 0.3, 0.7)
+	post_mat.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA
+	post_mat.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
+	var post_mesh := BoxMesh.new()
+	post_mesh.size = Vector3(0.1, 1.5, 0.1)
+	for corner in [Vector3(-0.5, 0.75, -0.5), Vector3(_prefab_w - 0.5, 0.75, -0.5),
+				   Vector3(-0.5, 0.75, _prefab_h - 0.5), Vector3(_prefab_w - 0.5, 0.75, _prefab_h - 0.5)]:
+		var post := MeshInstance3D.new()
+		post.mesh = post_mesh
+		post.material_override = post_mat
+		post.position = corner
+		_prefab_outline.add_child(post)
+
+
+func _update_prefab_outline(gx: int, gz: int) -> void:
+	if not _prefab_outline:
+		return
+	_prefab_outline.position = Vector3(gx, 0, gz)
+
+	# Check if placement is valid (no overlap with existing structures)
+	_prefab_valid = _check_prefab_clear(gx, gz)
+
+	# Update color: green = valid, red = blocked
+	var color: Color = Color(0.2, 0.8, 0.2, 0.35) if _prefab_valid else Color(0.9, 0.2, 0.2, 0.35)
+	var post_color: Color = Color(0.3, 1.0, 0.3, 0.7) if _prefab_valid else Color(1.0, 0.3, 0.3, 0.7)
+	for child in _prefab_outline.get_children():
+		if child is MeshInstance3D:
+			var mat: StandardMaterial3D = child.material_override
+			if child.mesh is PlaneMesh:
+				mat.albedo_color = color
+			else:
+				mat.albedo_color = post_color
+
+
+func _check_prefab_clear(gx: int, gz: int) -> bool:
+	for dx in range(_prefab_w):
+		for dz in range(_prefab_h):
+			var x: int = gx + dx
+			var z: int = gz + dz
+			# Check all gridmap layers for existing structures
+			if decoration_gridmap and decoration_gridmap.get_cell_item(Vector3i(x, 0, z)) != -1:
+				return false
+			if items_gridmap and items_gridmap.get_cell_item(Vector3i(x, 0, z)) != -1:
+				return false
+			if gridmap and gridmap.get_cell_item(Vector3i(x, 0, z)) != -1:
+				return false
+			if Vector3i(x, 0, z) in _animated_instances:
+				return false
+	return true
+
+
+func _place_prefab(gx: int, gz: int) -> void:
+	if not _prefab_valid:
+		Toast.notify("Can't place here — something is in the way!", _WARN_ICON)
+		return
+
+	var dungeon_idx: int = _find_struct_by_name("Dungeon Wall")
+	var narrow_idx: int = _find_struct_by_name("Narrow Wall")
+	if dungeon_idx == -1 or narrow_idx == -1:
+		Toast.notify("Missing wall structures!", _WARN_ICON)
+		return
+
+	var dungeon_mid: int = _struct_mesh_id[dungeon_idx]
+	var narrow_mid: int = _struct_mesh_id[narrow_idx]
+	var x1: int = gx
+	var z1: int = gz
+	var x2: int = gx + _prefab_w - 1
+	var z2: int = gz + _prefab_h - 1
+
+	# Place walls on perimeter
+	for x in range(x1, x2 + 1):
+		for z in range(z1, z2 + 1):
+			var is_border: bool = (x == x1 or x == x2 or z == z1 or z == z2)
+			if not is_border:
+				continue
+
+			var is_corner: bool = (x == x1 or x == x2) and (z == z1 or z == z2)
+			# Check for T-junctions on edges
+			var has_h_neighbor: bool = false
+			var has_v_neighbor: bool = false
+			if x == x1 or x == x2:
+				has_v_neighbor = true
+			if z == z1 or z == z2:
+				has_h_neighbor = true
+
+			var cell := Vector3i(x, 0, z)
+			if is_corner:
+				decoration_gridmap.set_cell_item(cell, dungeon_mid, 0)
+			elif z == z1 or z == z2:
+				# Horizontal wall — match BSP-confirmed orientations
+				# Bottom wall (z == z2): orientation 22
+				# Top wall (z == z1): orientation 0
+				if z == z2:
+					decoration_gridmap.set_cell_item(cell, narrow_mid, 22)
+				else:
+					decoration_gridmap.set_cell_item(cell, narrow_mid, 0)
+			else:
+				# Vertical wall — match BSP-confirmed orientations
+				# Left wall (x == x1): orientation 10
+				# Right wall (x == x2): orientation 16
+				if x == x1:
+					decoration_gridmap.set_cell_item(cell, narrow_mid, 10)
+				else:
+					decoration_gridmap.set_cell_item(cell, narrow_mid, 16)
+
+	# Place themed items inside the room (interior = 1 tile in from walls)
+	var interior_x1: int = x1 + 1
+	var interior_z1: int = z1 + 1
+	var interior_x2: int = x2 - 1
+	var interior_z2: int = z2 - 1
+	var interior_w: int = interior_x2 - interior_x1 + 1
+	var interior_h: int = interior_z2 - interior_z1 + 1
+
+	if interior_w > 0 and interior_h > 0:
+		var item_names: Array = PREFAB_ITEMS.get(_prefab_theme, [])
+		# Place items at random interior positions — roughly 1 per 4-6 tiles
+		var item_count: int = clampi((interior_w * interior_h) / 5, 2, item_names.size() * 3)
+		var used_positions: Dictionary = {}  # avoid stacking
+
+		for _i in range(item_count):
+			var name: String = item_names[randi() % item_names.size()]
+			var s_idx: int = _find_struct_by_name(name)
+			if s_idx == -1:
+				continue
+
+			# Find a random unused interior position
+			var attempts: int = 0
+			var px: int = 0
+			var pz: int = 0
+			while attempts < 20:
+				px = randi_range(interior_x1, interior_x2)
+				pz = randi_range(interior_z1, interior_z2)
+				if Vector2i(px, pz) not in used_positions:
+					break
+				attempts += 1
+			if attempts >= 20:
+				continue
+			used_positions[Vector2i(px, pz)] = true
+
+			var s: Structure = structures[s_idx]
+			var pos := Vector3i(px, 0, pz)
+
+			if _is_animated_structure(s):
+				_spawn_animated(s, s_idx, pos, 0)
+			else:
+				var target_map: GridMap = items_gridmap if s.layer == 2 else decoration_gridmap
+				target_map.set_cell_item(pos, _struct_mesh_id[s_idx], 0)
+
+	# Rebuild nav map
+	_nav_rebuild()
+
+	# Clean up placement mode
+	_prefab_placing = false
+	if _prefab_outline:
+		_prefab_outline.queue_free()
+		_prefab_outline = null
+
+	Toast.notify("Mystery room placed! It's a %s!" % _prefab_theme, _AWARD_ICON)
+	print("[Merchant] Prefab placed: %s (%dx%d) at (%d, %d)" % [_prefab_theme, _prefab_w, _prefab_h, gx, gz])
+
+
+func _cancel_prefab() -> void:
+	_prefab_placing = false
+	if _prefab_outline:
+		_prefab_outline.queue_free()
+		_prefab_outline = null
+	# Refund
+	if not _freebuild:
+		map.cash += MERCHANT_PRICE
+		update_cash()
+	Toast.notify("Prefab cancelled — gold refunded", _WARN_ICON)
 
 
 func _bsp_node(bx1: int, bz1: int, bx2: int, bz2: int) -> Dictionary:
@@ -1203,13 +1760,15 @@ func _bsp_split(node: Dictionary, rng: RandomNumberGenerator) -> void:
 
 func _bsp_mark_walls(node: Dictionary, grid: Dictionary) -> void:
 	if node["is_leaf"]:
-		# Mark perimeter of this room as walls
+		# Mark perimeter of this room as walls with direction
+		# "wall_h" = horizontal wall (runs along X, blocks Z movement) → orientation 0
+		# "wall_v" = vertical wall (runs along Z, blocks X movement) → orientation 10 (90°)
 		for x in range(node["x1"], node["x2"] + 1):
-			grid[Vector2i(x, node["z1"])] = "wall"
-			grid[Vector2i(x, node["z2"])] = "wall"
+			grid[Vector2i(x, node["z1"])] = "wall_h"  # top edge
+			grid[Vector2i(x, node["z2"])] = "wall_h"  # bottom edge
 		for z in range(node["z1"] + 1, node["z2"]):
-			grid[Vector2i(node["x1"], z)] = "wall"
-			grid[Vector2i(node["x2"], z)] = "wall"
+			grid[Vector2i(node["x1"], z)] = "wall_v"  # left edge
+			grid[Vector2i(node["x2"], z)] = "wall_v"  # right edge
 	else:
 		_bsp_mark_walls(node["left"], grid)
 		_bsp_mark_walls(node["right"], grid)
@@ -1231,18 +1790,18 @@ func _bsp_mark_openings(node: Dictionary, grid: Dictionary, rng: RandomNumberGen
 		for z in range(node["z1"] + 1, node["z2"]):
 			var pos := Vector2i(sp, z)
 			# Skip if this position has perpendicular walls (it's a corner/intersection)
-			var has_e: bool = grid.has(Vector2i(sp + 1, z)) and grid[Vector2i(sp + 1, z)] == "wall"
-			var has_w: bool = grid.has(Vector2i(sp - 1, z)) and grid[Vector2i(sp - 1, z)] == "wall"
-			if not has_e and not has_w:
+			var val_e: String = grid.get(Vector2i(sp + 1, z), "")
+			var val_w: String = grid.get(Vector2i(sp - 1, z), "")
+			if not val_e.begins_with("wall") and not val_w.begins_with("wall"):
 				candidates.append(pos)
 	else:
 		# Horizontal split at row sp — candidates along x
 		for x in range(node["x1"] + 1, node["x2"]):
 			var pos := Vector2i(x, sp)
 			# Skip if this position has perpendicular walls (it's a corner/intersection)
-			var has_n: bool = grid.has(Vector2i(x, sp - 1)) and grid[Vector2i(x, sp - 1)] == "wall"
-			var has_s: bool = grid.has(Vector2i(x, sp + 1)) and grid[Vector2i(x, sp + 1)] == "wall"
-			if not has_n and not has_s:
+			var val_n: String = grid.get(Vector2i(x, sp - 1), "")
+			var val_s: String = grid.get(Vector2i(x, sp + 1), "")
+			if not val_n.begins_with("wall") and not val_s.begins_with("wall"):
 				candidates.append(pos)
 
 	if not candidates.is_empty():
@@ -1274,6 +1833,9 @@ func _unhandled_key_input(event: InputEvent) -> void:
 			var mode_str: String = "ON" if _freebuild else "OFF"
 			Toast.notify("Freebuild: " + mode_str, _SAVE_ICON)
 			print("[Builder] Freebuild %s" % mode_str)
+		elif event.physical_keycode == KEY_P:
+			if _max_palette_count > 1:
+				_cycle_global_palette()
 
 
 # Select a structure by index (called from BuildingPicker signal)
@@ -1332,6 +1894,14 @@ func _advance_time(delta: float) -> void:
 		# Adventurers visit every week
 		if Global.current_day % VISIT_INTERVAL_DAYS == 0 and Global.current_day > 0:
 			_do_adventurer_visit()
+
+		# Travelling merchant — chance to appear mid-week (day 3 of each week)
+		if Global.current_day % 7 == 3 and not _merchant_offered_this_week:
+			_merchant_offered_this_week = true
+			if randf() <= MERCHANT_CHANCE:
+				_show_merchant_dialog()
+		if Global.current_day % 7 == 0:
+			_merchant_offered_this_week = false  # reset for new week
 
 
 func _skip_to_visit() -> void:
@@ -1497,30 +2067,50 @@ func _detect_rooms() -> Array:
 		var enclosed_pct: float = float(enclosed_edges) / float(border_edges)
 
 		if enclosed_pct >= ROOM_ENCLOSE_PCT:
-			# Check for treasure inside the room
-			var has_treasure: bool = false
+			# Inventory all items inside this room to determine theme
+			var item_names: Array[String] = []
 			for rcell in region:
-				# Static items
-				if items_gridmap and items_gridmap.get_cell_item(rcell) != -1:
-					var mid: int = items_gridmap.get_cell_item(rcell)
-					if mid in _item_id_to_struct:
-						var s: Structure = structures[_item_id_to_struct[mid]]
-						if s.display_name.contains("Chest") or s.display_name.contains("Coin") or s.display_name.contains("Trophy"):
-							has_treasure = true
-							break
-				# Animated items (chests)
+				# Static items (check multiple Y levels for stacked items)
+				if items_gridmap:
+					for y in range(0, 5):
+						var check := Vector3i(rcell.x, y, rcell.z)
+						var mid: int = items_gridmap.get_cell_item(check)
+						if mid != -1 and mid in _item_id_to_struct:
+							item_names.append(structures[_item_id_to_struct[mid]].display_name)
+				# Animated items (chests, characters, traps)
 				if rcell in _animated_instances:
 					var s_idx: int = _animated_struct_idx.get(rcell, -1)
 					if s_idx != -1:
-						var s: Structure = structures[s_idx]
-						if s.display_name.contains("Chest"):
-							has_treasure = true
-							break
+						item_names.append(structures[s_idx].display_name)
+
+			# Check for treasure (legacy flag)
+			var has_treasure: bool = false
+			for iname in item_names:
+				if iname.contains("Chest") or iname.contains("Coin") or iname.contains("Trophy"):
+					has_treasure = true
+					break
+
+			# Classify room theme — pick the theme with the most matching items
+			var best_theme: String = ""
+			var best_count: int = 0
+			for theme_name in ROOM_THEMES:
+				var theme: Dictionary = ROOM_THEMES[theme_name]
+				var count: int = 0
+				for iname in item_names:
+					for keyword in theme.keywords:
+						if iname.contains(keyword):
+							count += 1
+							break  # one item matches one keyword, move to next item
+				if count >= theme.min and count > best_count:
+					best_count = count
+					best_theme = theme_name
 
 			rooms.append({
 				"size": region.size(),
 				"enclosed_pct": enclosed_pct,
 				"has_treasure": has_treasure,
+				"theme": best_theme,
+				"theme_count": best_count,
 			})
 
 	return rooms
@@ -1615,15 +2205,26 @@ func _compute_dungeon_stats() -> Dictionary:
 
 	total_tiles = floor_count + wall_count + item_count + _animated_instances.size()
 
-	# Room detection — enclosed rooms grant bonus points
+	# Room detection — enclosed rooms grant bonus points + theme bonuses
 	var rooms: Array = _detect_rooms()
 	var room_points: int = 0
 	var treasure_rooms: int = 0
+	var themed_rooms: Dictionary = {}  # theme_name -> count
+	var affinities: Dictionary = PARTY_THEME_AFFINITY.get(_current_party_type, {})
+
 	for room in rooms:
 		room_points += ROOM_POINTS
 		if room.get("has_treasure", false):
 			room_points += TREASURE_ROOM_BONUS
 			treasure_rooms += 1
+
+		# Theme bonus — multiplied by party affinity
+		var theme: String = room.get("theme", "")
+		if theme != "":
+			themed_rooms[theme] = themed_rooms.get(theme, 0) + 1
+			var theme_bonus: int = ROOM_THEMES[theme].bonus
+			var affinity: float = affinities.get(theme, 1.0)
+			room_points += int(theme_bonus * affinity)
 
 	# Apply party-type score multipliers
 	var mults: Dictionary = PARTY_MULTIPLIERS.get(_current_party_type, {})
@@ -1655,6 +2256,7 @@ func _compute_dungeon_stats() -> Dictionary:
 		"atmosphere_points": adj_atmosphere,
 		"room_count":        rooms.size(),
 		"treasure_rooms":    treasure_rooms,
+		"themed_rooms":      themed_rooms,
 		"room_points":       room_points,
 		"total_points":      total_points,
 		"stars":             stars,
@@ -1690,16 +2292,56 @@ func _do_adventurer_visit() -> void:
 	# Show announcement dialog
 	_show_visit_announcement()
 
+var _selected_duration: float = 30.0  # default intermission duration
+
 func _show_visit_announcement() -> void:
 	var dialog := AcceptDialog.new()
 	dialog.title = "Adventurers Approaching!"
 	var type_label: String = _party_type_label(_current_party_type)
-	dialog.dialog_text = "%s (%s) are arriving to explore your dungeon!\n\nSit back and watch..." % [_current_party_name, type_label]
+
+	# Build custom content with duration picker
+	var vbox := VBoxContainer.new()
+	var msg := Label.new()
+	msg.text = "%s (%s) are arriving to explore your dungeon!" % [_current_party_name, type_label]
+	msg.autowrap_mode = TextServer.AUTOWRAP_WORD
+	vbox.add_child(msg)
+
+	var spacer := Control.new()
+	spacer.custom_minimum_size = Vector2(0, 8)
+	vbox.add_child(spacer)
+
+	var dur_label := Label.new()
+	dur_label.text = "How long should they explore?"
+	vbox.add_child(dur_label)
+
+	var hbox := HBoxContainer.new()
+	hbox.alignment = BoxContainer.ALIGNMENT_CENTER
+	var durations := [["30 sec", 30.0], ["1 min", 60.0], ["2 min", 120.0]]
+	_selected_duration = 30.0
+
+	for entry in durations:
+		var btn := Button.new()
+		btn.text = entry[0]
+		btn.custom_minimum_size = Vector2(80, 32)
+		btn.toggle_mode = true
+		btn.button_pressed = (entry[1] == 30.0)  # default selection
+		btn.pressed.connect(func():
+			_selected_duration = entry[1]
+			# Unpress other buttons
+			for child in hbox.get_children():
+				if child is Button and child != btn:
+					child.button_pressed = false
+			btn.button_pressed = true
+		)
+		hbox.add_child(btn)
+	vbox.add_child(hbox)
+
+	dialog.add_child(vbox)
 	dialog.ok_button_text = "Let them in!"
 	dialog.confirmed.connect(_start_intermission)
-	dialog.canceled.connect(_start_intermission)  # clicking X also proceeds
+	dialog.canceled.connect(_start_intermission)
 	add_child(dialog)
-	dialog.popup_centered()
+	dialog.popup_centered(Vector2i(320, 0))
 
 func _start_intermission() -> void:
 	_intermission_active = true
@@ -1719,6 +2361,9 @@ func _start_intermission() -> void:
 		_saved_cam_pos = view_node.camera_position
 		_saved_cam_rot = view_node.camera_rotation
 		_saved_cam_zoom = view_node.zoom
+
+	# Dim the dungeon — adventurers explore by torchlight
+	_dim_dungeon_lights()
 
 	# Activate all animated instances — play looping animations during visit
 	for pos in _animated_instances:
@@ -1745,6 +2390,7 @@ func _start_intermission() -> void:
 	# Try to start the new walk-through intermission
 	if _has_stairs:
 		_intermission_node = Intermission.new()
+		_intermission_node.duration = _selected_duration
 		add_child(_intermission_node)
 		var ok: bool = _intermission_node.setup({
 			"nav_walls": _nav_walls,
@@ -1758,6 +2404,8 @@ func _start_intermission() -> void:
 			"party_type": _current_party_type,
 			"stairs_pos": _stairs_position,
 			"trophy_pos": _trophy_position,
+			"loot_chances": LOOT_CHANCES,
+			"loot_mult": PARTY_LOOT_MULT.get(_current_party_type, 1.0),
 		})
 		if ok:
 			_intermission_node.finished.connect(_end_intermission)
@@ -1771,6 +2419,31 @@ func _start_intermission() -> void:
 	else:
 		# No stairs — use old orbit system
 		_start_orbit_fallback()
+
+
+func _dim_dungeon_lights() -> void:
+	# Find the Sun and Environment if we haven't cached them yet
+	if _sun_node == null:
+		_sun_node = get_parent().get_node_or_null("Sun") as DirectionalLight3D
+	if _env == null:
+		var cam := get_parent().get_node_or_null("View/Camera") as Camera3D
+		if cam and cam.environment:
+			_env = cam.environment
+
+	# Save current values and dim — underground by torchlight
+	if _sun_node:
+		_saved_sun_energy = _sun_node.light_energy
+		_sun_node.light_energy = 0.0  # no sunlight underground
+	if _env:
+		_saved_ambient_energy = _env.ambient_light_energy
+		_env.ambient_light_energy = 0.03  # bare minimum so geometry is faintly visible
+
+
+func _restore_dungeon_lights() -> void:
+	if _sun_node:
+		_sun_node.light_energy = _saved_sun_energy
+	if _env:
+		_env.ambient_light_energy = _saved_ambient_energy
 
 
 func _start_orbit_fallback() -> void:
@@ -1818,18 +2491,28 @@ func _process_intermission(delta: float) -> void:
 		if view_node:
 			var orbit_speed: float = 36.0
 			view_node.camera_rotation.y += orbit_speed * delta
-		if _intermission_timer >= INTERMISSION_DURATION:
+		if _intermission_timer >= _selected_duration:
 			_end_intermission()
 
+
+var _last_looted_items: Array = []  # saved before intermission node is freed
 
 func _end_intermission() -> void:
 	_intermission_active = false
 
-	# Clean up walk-through node if it exists
+	# Grab looted items BEFORE freeing the intermission node
+	_last_looted_items.clear()
+	if _intermission_node != null and is_instance_valid(_intermission_node):
+		_last_looted_items = _intermission_node.looted_items.duplicate(true)
+
+	# Clean up walk-through node
 	if _intermission_node != null:
 		if is_instance_valid(_intermission_node):
 			_intermission_node.queue_free()
 		_intermission_node = null
+
+	# Restore dungeon lighting
+	_restore_dungeon_lights()
 
 	# Restore camera and unblock input
 	if view_node:
@@ -1867,43 +2550,18 @@ func _finalize_visit() -> void:
 		return
 
 	var payout: int = stats.get("payout", 0)
-	var loot_mult: float = PARTY_LOOT_MULT.get(_current_party_type, 1.0)
 
-	# Roll loot chances — adventurers take items and pay their full cost
+	# Loot was rolled LIVE during the walk-through — items already vanished
 	var loot: int = 0
 	var looted_counts: Dictionary = {}   # display_name -> count
-	var cells_to_clear: Array = []       # Vector3i cells to remove from items gridmap
-	var anims_to_remove: Array = []      # Vector3i positions to remove animated instances
 
-	# Check static items in items gridmap
-	if items_gridmap:
-		for cell in items_gridmap.get_used_cells():
-			var mid: int = items_gridmap.get_cell_item(cell)
-			if mid != -1 and mid in _item_id_to_struct:
-				var s: Structure = structures[_item_id_to_struct[mid]]
-				var chance: float = minf(_get_loot_chance(s.display_name) * loot_mult, 1.0)
-				if chance > 0.0 and randf() <= chance:
-					loot += s.price
-					cells_to_clear.append(cell)
-					looted_counts[s.display_name] = looted_counts.get(s.display_name, 0) + 1
-
-	# Check animated instances (chests can be looted, characters/traps cannot)
-	for pos in _animated_instances:
-		var s_idx: int = _animated_struct_idx.get(pos, -1)
-		if s_idx == -1:
-			continue
-		var s: Structure = structures[s_idx]
-		var chance: float = minf(_get_loot_chance(s.display_name) * loot_mult, 1.0)
-		if chance > 0.0 and randf() <= chance:
-			loot += s.price
-			anims_to_remove.append(pos)
-			looted_counts[s.display_name] = looted_counts.get(s.display_name, 0) + 1
-
-	# Remove looted items from the map
-	for cell in cells_to_clear:
-		items_gridmap.set_cell_item(cell, -1)
-	for pos in anims_to_remove:
-		_remove_animated(pos)
+	for entry in _last_looted_items:
+		loot += entry.price
+		looted_counts[entry.name] = looted_counts.get(entry.name, 0) + 1
+		# Grid items were already removed during intermission
+		# Animated instances were hidden — now fully remove them
+		if entry.type == "anim":
+			_remove_animated(entry.cell)
 
 	var total: int = payout + loot
 	map.cash += total

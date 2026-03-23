@@ -8,7 +8,7 @@ class_name Intermission
 
 signal finished  # emitted when the intermission is done
 
-const DURATION: float = 30.0
+var duration: float = 30.0  # set by builder before setup
 const MIN_WALK_SPEED: float = 2.5    # minimum tiles per second (small dungeons)
 const MAX_WALK_SPEED: float = 12.0   # maximum tiles per second (huge dungeons)
 const INTERACTION_PAUSE: float = 1.5  # seconds to pause at a point of interest
@@ -41,6 +41,16 @@ const PICKUP_ANIM: String = "pick-up"
 const JUMP_ANIM: String = "jump"     # used for trap reaction
 const DIE_ANIM: String = "die"       # used for trap casualty (fun visual)
 
+# Lighting constants
+const COLUMN_LIGHT_COLOR: Color = Color(1.0, 0.75, 0.4)   # warm torch glow
+const COLUMN_LIGHT_ENERGY: float = 3.5
+const COLUMN_LIGHT_RANGE: float = 6.0
+const COLUMN_LIGHT_ATTENUATION: float = 1.2
+const TORCH_LIGHT_COLOR: Color = Color(1.0, 0.85, 0.5)    # party torch — brighter, hero light
+const TORCH_LIGHT_ENERGY: float = 4.0
+const TORCH_LIGHT_RANGE: float = 8.0
+const COLUMN_NAMES: Array[String] = ["Dungeon Column", "Arena Column", "Damaged Column"]
+
 # Internal state
 var _timer: float = 0.0
 var _active: bool = false
@@ -56,6 +66,17 @@ var _view_node: Node3D               # camera pivot
 var _poi_set: Dictionary = {}        # Vector3i -> String (point of interest type: "chest", "trap", "monster")
 var _visited_pois: Dictionary = {}   # Vector3i -> true (already interacted with)
 var _party_type: int = 0             # 0=Warriors, 1=Rogues, 2=Scholars
+
+# Lighting
+var _column_lights: Array[OmniLight3D] = []  # lights placed at columns
+var _torch_light: OmniLight3D = null         # light carried by middle party member
+
+# Contact-based looting — live loot rolls as the party walks past items
+const LOOT_CONTACT_RADIUS: float = 1.5       # tiles away from path to count as "contacted"
+var contacted_items: Dictionary = {}          # Vector3i -> true (already scanned, avoid re-rolling)
+var looted_items: Array = []                  # Array of { "cell": Vector3i, "type": "grid"|"anim", "name": String, "price": int }
+var _loot_chances: Dictionary = {}            # display_name keyword -> chance (passed from builder)
+var _loot_mult: float = 1.0                   # party type multiplier
 
 # References passed in from builder
 var _nav_walls: Dictionary      # Vector2i -> String  (solid walls from builder)
@@ -78,6 +99,8 @@ func setup(params: Dictionary) -> bool:
 	_view_node = params.get("view_node")
 	var party_type: int = params.get("party_type", 0)
 	_party_type = party_type
+	_loot_chances = params.get("loot_chances", {})
+	_loot_mult = params.get("loot_mult", 1.0)
 	var stairs_pos = params.get("stairs_pos")  # Vector3i or null
 	var trophy_pos = params.get("trophy_pos")  # Vector3i or null
 
@@ -338,13 +361,13 @@ func setup(params: Dictionary) -> bool:
 		print("[Intermission] No valid path could be built!")
 		return false
 
-	# Scale walk speed so the party finishes comfortably within DURATION.
+	# Scale walk speed so the party finishes comfortably within duration.
 	# Measure total path length in tiles, then pick a speed that completes
-	# in ~80% of DURATION (leaving 20% headroom for POI pauses).
+	# in ~80% of duration (leaving 20% headroom for POI pauses).
 	var total_path_length: float = 0.0
 	for i in range(_path_points.size() - 1):
 		total_path_length += _path_points[i].distance_to(_path_points[i + 1])
-	var target_time: float = DURATION * 0.8  # 80% of total time for walking
+	var target_time: float = duration * 0.8  # 80% of total time for walking
 	_walk_speed = clampf(total_path_length / target_time, MIN_WALK_SPEED, MAX_WALK_SPEED)
 
 	var type_label: String = ["Warriors", "Rogues", "Scholars"][mini(party_type, 2)]
@@ -352,6 +375,20 @@ func setup(params: Dictionary) -> bool:
 
 	# Spawn party models
 	_spawn_party(party_type)
+
+	# ── Dungeon lighting: columns emit warm glow ───────────────────────────
+	_spawn_column_lights()
+
+	# ── Torch carrier: middle party member holds a light ───────────────────
+	if _party.size() >= 2:
+		_torch_light = OmniLight3D.new()
+		_torch_light.light_color = TORCH_LIGHT_COLOR
+		_torch_light.light_energy = TORCH_LIGHT_ENERGY
+		_torch_light.omni_range = TORCH_LIGHT_RANGE
+		_torch_light.omni_attenuation = COLUMN_LIGHT_ATTENUATION
+		_torch_light.shadow_enabled = true
+		_torch_light.position = Vector3(0, 1.2, 0)  # above the character's hand
+		_party[1].node.add_child(_torch_light)
 
 	# Initialize positions
 	_path_index = 0
@@ -367,7 +404,7 @@ func setup(params: Dictionary) -> bool:
 		_view_node.camera_position = _leader_pos
 		_view_node.zoom = CAMERA_ZOOM
 
-	print("[Intermission] Path length: %d waypoints (stairs → trophy → stairs)" % _path_points.size())
+	print("[Intermission] Path length: %d waypoints, %d column lights, torch on member 2" % [_path_points.size(), _column_lights.size()])
 	return true
 
 
@@ -388,7 +425,7 @@ func process_tick(delta: float) -> void:
 			return
 
 	# Time's up or path finished
-	if _timer >= DURATION or _path_index >= _path_points.size() - 1:
+	if _timer >= duration or _path_index >= _path_points.size() - 1:
 		_cleanup()
 		return
 
@@ -439,6 +476,9 @@ func process_tick(delta: float) -> void:
 	# Update party positions — leader at front, others trail behind
 	_update_party_positions()
 	_update_camera(delta)
+
+	# Scan nearby items for contact-based looting
+	_scan_nearby_items()
 
 
 func _update_party_positions() -> void:
@@ -621,8 +661,92 @@ func _spawn_party(party_type: int) -> void:
 		_party.append({ "node": instance, "anim": anim_player })
 
 
+func _scan_nearby_items() -> void:
+	# Roll loot LIVE as the party walks past items — taken items vanish immediately
+	var lx: int = int(round(_leader_pos.x))
+	var lz: int = int(round(_leader_pos.z))
+	var radius: int = int(ceil(LOOT_CONTACT_RADIUS))
+	for dx in range(-radius, radius + 1):
+		for dz in range(-radius, radius + 1):
+			var cx: int = lx + dx
+			var cz: int = lz + dz
+			# Check static items in items gridmap (all Y levels)
+			if _items_gridmap:
+				for y in range(0, 5):
+					var check := Vector3i(cx, y, cz)
+					if check in contacted_items:
+						continue
+					contacted_items[check] = true
+					var mid: int = _items_gridmap.get_cell_item(check)
+					if mid == -1:
+						continue
+					var s_idx: int = _item_id_to_struct.get(mid, -1)
+					if s_idx == -1:
+						continue
+					var s: Structure = _structures[s_idx]
+					var chance: float = _get_loot_chance_for(s.display_name)
+					if chance > 0.0 and randf() <= chance:
+						looted_items.append({ "cell": check, "type": "grid", "name": s.display_name, "price": s.price })
+						_items_gridmap.set_cell_item(check, -1)  # vanish immediately
+
+			# Check animated instances at this (x, z)
+			for pos in _animated_instances.keys():
+				if pos.x == cx and pos.z == cz and pos not in contacted_items:
+					contacted_items[pos] = true
+					var s_idx: int = _animated_struct_idx.get(pos, -1)
+					if s_idx == -1:
+						continue
+					var s: Structure = _structures[s_idx]
+					var chance: float = _get_loot_chance_for(s.display_name)
+					if chance > 0.0 and randf() <= chance:
+						looted_items.append({ "cell": pos, "type": "anim", "name": s.display_name, "price": s.price })
+						# Hide the animated instance immediately
+						var instance: Node3D = _animated_instances[pos]
+						if instance:
+							instance.visible = false
+
+
+func _get_loot_chance_for(display_name: String) -> float:
+	# Required items are never looted
+	if display_name.contains("Stairs") or display_name.contains("[Req]"):
+		return 0.0
+	for keyword in _loot_chances:
+		if display_name.contains(keyword):
+			return minf(_loot_chances[keyword] * _loot_mult, 1.0)
+	return 0.0
+
+
+func _spawn_column_lights() -> void:
+	_column_lights.clear()
+	# Find all column positions in the items gridmap and animated instances
+	if _items_gridmap:
+		for cell in _items_gridmap.get_used_cells():
+			var mid: int = _items_gridmap.get_cell_item(cell)
+			var s_idx: int = _item_id_to_struct.get(mid, -1)
+			if s_idx != -1 and _structures[s_idx].display_name in COLUMN_NAMES:
+				var light := OmniLight3D.new()
+				light.light_color = COLUMN_LIGHT_COLOR
+				light.light_energy = COLUMN_LIGHT_ENERGY
+				light.omni_range = COLUMN_LIGHT_RANGE
+				light.omni_attenuation = COLUMN_LIGHT_ATTENUATION
+				light.shadow_enabled = false        # no shadows (perf)
+				light.distance_fade_enabled = true   # GPU culls distant lights
+				light.distance_fade_begin = 8.0
+				light.distance_fade_length = 4.0     # fades out 8–12 tiles from camera
+				light.position = Vector3(cell.x + 0.5, 1.5, cell.z + 0.5)
+				add_child(light)
+				_column_lights.append(light)
+
+
 func _cleanup() -> void:
 	_active = false
+	# Remove column lights
+	for light in _column_lights:
+		if is_instance_valid(light):
+			light.queue_free()
+	_column_lights.clear()
+	_torch_light = null  # freed with party member node
+
 	# Despawn party members
 	for member in _party:
 		if member.node:
