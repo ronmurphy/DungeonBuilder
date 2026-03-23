@@ -250,6 +250,8 @@ func _ready():
 		generate_terrain()
 		# Generate the first party for a new game
 		_roll_next_party()
+		# Generate a BSP starter dungeon skeleton
+		_generate_starter_dungeon()
 
 
 	# Permanent floor underlay — fills gaps so the background never shows
@@ -1096,6 +1098,160 @@ func action_demolish(gridmap_position):
 				_has_trophy = false
 				_trophy_position = Vector3i(-999, -999, -999)
 			Audio.play("sounds/removal-a.ogg, sounds/removal-b.ogg, sounds/removal-c.ogg, sounds/removal-d.ogg", -20)
+
+# ── BSP Starter Dungeon Generator ────────────────────────────────────────────
+# Generates a random dungeon wall skeleton using Binary Space Partitioning.
+# Placed for free on new-game only.
+
+const BSP_MIN_PARTITION: int = 4   # minimum partition width/height (allows 2×2 interior)
+const BSP_MIN_SPLIT: int = 7      # minimum size to be splittable (both halves >= 4)
+
+func _generate_starter_dungeon() -> void:
+	if not decoration_gridmap:
+		return
+	var rng := RandomNumberGenerator.new()
+	rng.seed = Global.map_seed
+
+	# Random dungeon size 15–26 (use global randi so size varies independently)
+	var dw: int = (randi() % 12) + 15
+	var dh: int = (randi() % 12) + 15
+
+	# Center on map
+	var x1: int = -dw / 2
+	var z1: int = -dh / 2
+	var x2: int = x1 + dw - 1
+	var z2: int = z1 + dh - 1
+
+	# Find required structure index by display name
+	var dungeon_idx: int = _find_struct_by_name("Dungeon Wall")
+
+	if dungeon_idx == -1:
+		push_warning("[BSP] Missing Dungeon Wall structure — skipping dungeon generation")
+		return
+
+	# Build BSP tree
+	var root := _bsp_node(x1, z1, x2, z2)
+	_bsp_split(root, rng)
+
+	# Build wall grid: Vector2i(x, z) -> "wall" or "opening"
+	var grid: Dictionary = {}
+	_bsp_mark_walls(root, grid)
+	_bsp_mark_openings(root, grid, rng)
+
+	# Place only walls — openings are left empty (no structure)
+	var dungeon_mid: int = _struct_mesh_id[dungeon_idx]
+
+	for pos in grid:
+		if grid[pos] == "wall":
+			decoration_gridmap.set_cell_item(Vector3i(pos.x, 0, pos.y), dungeon_mid, 0)
+
+	# Rebuild navigation wall map so pathfinding works immediately
+	_nav_rebuild()
+	print("[BSP] Starter dungeon generated: %dx%d at (%d,%d)→(%d,%d), %d wall cells" % [dw, dh, x1, z1, x2, z2, grid.size()])
+
+
+func _find_struct_by_name(display_name: String) -> int:
+	for i in range(structures.size()):
+		if structures[i].display_name == display_name:
+			return i
+	return -1
+
+
+func _bsp_node(bx1: int, bz1: int, bx2: int, bz2: int) -> Dictionary:
+	return { "x1": bx1, "z1": bz1, "x2": bx2, "z2": bz2,
+			 "left": {}, "right": {}, "split_v": false, "split_pos": 0, "is_leaf": true }
+
+
+func _bsp_split(node: Dictionary, rng: RandomNumberGenerator) -> void:
+	var w: int = node["x2"] - node["x1"] + 1
+	var h: int = node["z2"] - node["z1"] + 1
+
+	var can_v: bool = w >= BSP_MIN_SPLIT
+	var can_h: bool = h >= BSP_MIN_SPLIT
+
+	if not can_v and not can_h:
+		return  # leaf — room fits here
+
+	# Bias split toward the longer axis
+	var split_v: bool
+	if can_v and can_h:
+		split_v = rng.randf() < (0.7 if w > h else (0.3 if h > w else 0.5))
+	else:
+		split_v = can_v
+
+	node["split_v"] = split_v
+	node["is_leaf"] = false
+
+	if split_v:
+		var min_x: int = node["x1"] + BSP_MIN_PARTITION - 1  # left half width >= 4
+		var max_x: int = node["x2"] - BSP_MIN_PARTITION + 1  # right half width >= 4
+		var sx: int = rng.randi_range(min_x, max_x)
+		node["split_pos"] = sx
+		node["left"]  = _bsp_node(node["x1"], node["z1"], sx, node["z2"])
+		node["right"] = _bsp_node(sx, node["z1"], node["x2"], node["z2"])
+	else:
+		var min_z: int = node["z1"] + BSP_MIN_PARTITION - 1
+		var max_z: int = node["z2"] - BSP_MIN_PARTITION + 1
+		var sz: int = rng.randi_range(min_z, max_z)
+		node["split_pos"] = sz
+		node["left"]  = _bsp_node(node["x1"], node["z1"], node["x2"], sz)
+		node["right"] = _bsp_node(node["x1"], sz, node["x2"], node["z2"])
+
+	_bsp_split(node["left"], rng)
+	_bsp_split(node["right"], rng)
+
+
+func _bsp_mark_walls(node: Dictionary, grid: Dictionary) -> void:
+	if node["is_leaf"]:
+		# Mark perimeter of this room as walls
+		for x in range(node["x1"], node["x2"] + 1):
+			grid[Vector2i(x, node["z1"])] = "wall"
+			grid[Vector2i(x, node["z2"])] = "wall"
+		for z in range(node["z1"] + 1, node["z2"]):
+			grid[Vector2i(node["x1"], z)] = "wall"
+			grid[Vector2i(node["x2"], z)] = "wall"
+	else:
+		_bsp_mark_walls(node["left"], grid)
+		_bsp_mark_walls(node["right"], grid)
+
+
+func _bsp_mark_openings(node: Dictionary, grid: Dictionary, rng: RandomNumberGenerator) -> void:
+	if node["is_leaf"]:
+		return
+
+	# Place one opening along this node's split wall.
+	# The opening must NOT be at a corner (where perpendicular walls cross).
+	# Find valid positions: on the split line, between the node's bounds,
+	# where the cell has wall neighbors only along the split axis.
+	var sp: int = node["split_pos"]
+	var candidates: Array[Vector2i] = []
+
+	if node["split_v"]:
+		# Vertical split at column sp — candidates along z
+		for z in range(node["z1"] + 1, node["z2"]):
+			var pos := Vector2i(sp, z)
+			# Skip if this position has perpendicular walls (it's a corner/intersection)
+			var has_e: bool = grid.has(Vector2i(sp + 1, z)) and grid[Vector2i(sp + 1, z)] == "wall"
+			var has_w: bool = grid.has(Vector2i(sp - 1, z)) and grid[Vector2i(sp - 1, z)] == "wall"
+			if not has_e and not has_w:
+				candidates.append(pos)
+	else:
+		# Horizontal split at row sp — candidates along x
+		for x in range(node["x1"] + 1, node["x2"]):
+			var pos := Vector2i(x, sp)
+			# Skip if this position has perpendicular walls (it's a corner/intersection)
+			var has_n: bool = grid.has(Vector2i(x, sp - 1)) and grid[Vector2i(x, sp - 1)] == "wall"
+			var has_s: bool = grid.has(Vector2i(x, sp + 1)) and grid[Vector2i(x, sp + 1)] == "wall"
+			if not has_n and not has_s:
+				candidates.append(pos)
+
+	if not candidates.is_empty():
+		var pick: Vector2i = candidates[rng.randi_range(0, candidates.size() - 1)]
+		grid[pick] = "opening"
+
+	_bsp_mark_openings(node["left"], grid, rng)
+	_bsp_mark_openings(node["right"], grid, rng)
+
 
 # Rotates the 'cursor' 90 degrees
 
