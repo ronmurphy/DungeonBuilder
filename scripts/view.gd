@@ -56,10 +56,10 @@ func handle_input(_delta):
 	# Zoom in/out
 
 	if Input.is_action_just_released("zoom_in"):
-		zoom = max(15, zoom - 5) # 15 = Minimum zoom level, in meters
+		zoom = max(10, zoom - 5) # 10 = Minimum zoom level, in meters
 
 	if Input.is_action_just_released("zoom_out"):
-		zoom = min(80, zoom + 5) # 80 = Maximum zoom level, in meters
+		zoom = min(200, zoom + 5) # 200 = Maximum zoom level — enough for full 150x150 map
 
 	# Back to center
 

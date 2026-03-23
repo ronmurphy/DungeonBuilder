@@ -213,6 +213,17 @@ var _has_stairs: bool = false
 var _has_trophy: bool = false
 var _intermission_node: Intermission = null  # active walk-through instance
 
+# Navigation wall map — updated on every build/demolish for A* pathfinding
+# Maps Vector2i(x, z) -> String (structure display_name).  Passable openings
+# (Wall Opening, Gate, etc.) are stored in _nav_passable instead.
+var _nav_walls: Dictionary = {}     # Vector2i -> String  (solid walls)
+var _nav_passable: Dictionary = {}  # Vector2i -> String  (passable openings)
+
+# Freebuild mode — no gold cost for placing structures
+var _freebuild: bool = false
+const _FREEBUILD_COLOR: Color = Color(0.3, 0.6, 1.0)  # blue tint for gold display
+var _normal_cash_color: Color = Color.WHITE             # stored on ready
+
 func _ready():
 
 	_load_structures()
@@ -258,6 +269,10 @@ func _ready():
 		building_picker.help_requested.connect(_open_help)
 		building_picker.save_requested.connect(_do_save)
 		building_picker.skip_requested.connect(_skip_to_visit)
+
+	# Store the default cash label color for freebuild toggle
+	if cash_display:
+		_normal_cash_color = cash_display.modulate
 
 	# Start in browse mode — selector hidden until a building is picked
 	selector.visible = false
@@ -804,6 +819,51 @@ func _height_to_cell_y(height: float) -> int:
 	return int(round(height))
 
 
+# ── Navigation Wall Map ──────────────────────────────────────────────────────
+# Keeps a live 2D map of wall positions for A* pathfinding in the intermission.
+# Called on every build/demolish of a decoration-layer (layer 1) structure.
+
+const NAV_PASSABLE_WALLS: Array[String] = [
+	"Wall Opening", "Wall Gate", "Gate",
+]
+
+func _nav_update_wall(xz: Vector2i, display_name: String) -> void:
+	var is_passable: bool = false
+	for keyword in NAV_PASSABLE_WALLS:
+		if display_name.contains(keyword):
+			is_passable = true
+			break
+	if is_passable:
+		_nav_passable[xz] = display_name
+		_nav_walls.erase(xz)  # passable overrides solid
+	else:
+		_nav_walls[xz] = display_name
+		# Don't remove passable — a passable opening at this position wins
+		# (player may have stacked a wall + opening at same xz)
+
+func _nav_rebuild() -> void:
+	## Rebuild the entire wall map from gridmap + animated instance data.
+	## Called once after loading a save.
+	_nav_walls.clear()
+	_nav_passable.clear()
+	# Decoration gridmap (static walls, wall openings)
+	if decoration_gridmap:
+		for cell in decoration_gridmap.get_used_cells():
+			var mid: int = decoration_gridmap.get_cell_item(cell)
+			var s_idx: int = _deco_id_to_struct.get(mid, -1)
+			if s_idx == -1:
+				continue
+			_nav_update_wall(Vector2i(cell.x, cell.z), structures[s_idx].display_name)
+	# Animated instances (gates, etc.)
+	for pos in _animated_instances:
+		var s_idx: int = _animated_struct_idx.get(pos, -1)
+		if s_idx == -1 or s_idx >= structures.size():
+			continue
+		if structures[s_idx].layer == 1:
+			_nav_update_wall(Vector2i(pos.x, pos.z), structures[s_idx].display_name)
+	print("[Builder] Nav wall map rebuilt: %d walls, %d passable" % [_nav_walls.size(), _nav_passable.size()])
+
+
 # Find the topmost occupied cell Y at (x, z) for demolish — returns [GridMap/null, Vector3i, is_animated]
 func _find_topmost_at(gx: int, gz: int) -> Dictionary:
 	var best_y: float = -1.0
@@ -903,7 +963,11 @@ func action_build(gridmap_position):
 				return
 			var rotation_idx: int = gridmap.get_orthogonal_index_from_basis(selector.basis)
 			_spawn_animated(s, index, anchor, rotation_idx)
-			map.cash -= s.price
+			# Animated gates/openings go in nav map too
+			if layer == 1:
+				_nav_update_wall(Vector2i(anchor.x, anchor.z), s.display_name)
+			if not _freebuild:
+				map.cash -= s.price
 			update_cash()
 			Audio.play("sounds/placement-a.ogg, sounds/placement-b.ogg, sounds/placement-c.ogg, sounds/placement-d.ogg", -20)
 			return
@@ -938,7 +1002,8 @@ func action_build(gridmap_position):
 					terrain_gridmap.set_cell_item(vcell, -1)
 
 		if previous_tile != mid:
-			map.cash -= s.price
+			if not _freebuild:
+				map.cash -= s.price
 			update_cash()
 			Audio.play("sounds/placement-a.ogg, sounds/placement-b.ogg, sounds/placement-c.ogg, sounds/placement-d.ogg", -20)
 
@@ -951,6 +1016,10 @@ func action_build(gridmap_position):
 			_trophy_position = anchor
 			_has_trophy = true
 			print("[Builder] Trophy placed at %s" % str(anchor))
+
+		# Update navigation wall map for pathfinding
+		if layer == 1:
+			_nav_update_wall(Vector2i(anchor.x, anchor.z), s.display_name)
 
 # Demolish (remove) a structure — animated first, then items, then walls, then floors
 
@@ -966,7 +1035,7 @@ func action_demolish(gridmap_position):
 		if top["type"] == "animated":
 			var apos: Vector3i = top["pos"]
 			var s_idx: int = _animated_struct_idx.get(apos, -1)
-			if s_idx != -1:
+			if s_idx != -1 and not _freebuild:
 				var refund := ceili(structures[s_idx].price / 2.0)
 				map.cash += refund
 				update_cash()
@@ -989,9 +1058,10 @@ func action_demolish(gridmap_position):
 				var fp := Vector2i(1, 1)
 				if s_idx != -1:
 					fp = structures[s_idx].footprint
-					var refund := ceili(structures[s_idx].price / 2.0)
-					map.cash += refund
-					update_cash()
+					if not _freebuild:
+						var refund := ceili(structures[s_idx].price / 2.0)
+						map.cash += refund
+						update_cash()
 				gm.set_cell_item(anchor, -1)
 				var off_x: int = (fp.x - 1) / 2
 				var off_z: int = (fp.y - 1) / 2
@@ -1007,13 +1077,17 @@ func action_demolish(gridmap_position):
 			else:
 				# Wall or item tile
 				gm.set_cell_item(cell, -1)
-				if mid in lookup:
+				if mid in lookup and not _freebuild:
 					var refund := ceili(structures[lookup[mid]].price / 2.0)
 					map.cash += refund
 					update_cash()
 				removed = true
 
 		if removed:
+			# Remove from navigation wall map
+			var nav_key := Vector2i(gx, gz)
+			_nav_walls.erase(nav_key)
+			_nav_passable.erase(nav_key)
 			# Check if we demolished a required item
 			if _has_stairs and gx == _stairs_position.x and gz == _stairs_position.z:
 				_has_stairs = false
@@ -1032,6 +1106,19 @@ func action_rotate():
 		selector.rotate_y(deg_to_rad(90))
 
 		Audio.play("sounds/rotate.ogg", -30)
+
+
+func _unhandled_key_input(event: InputEvent) -> void:
+	if event is InputEventKey and event.pressed and not event.echo:
+		if event.physical_keycode == KEY_F:
+			_freebuild = not _freebuild
+			if cash_display:
+				cash_display.modulate = _FREEBUILD_COLOR if _freebuild else _normal_cash_color
+			update_cash()  # refresh the display
+			var mode_str: String = "ON" if _freebuild else "OFF"
+			Toast.notify("Freebuild: " + mode_str, _SAVE_ICON)
+			print("[Builder] Freebuild %s" % mode_str)
+
 
 # Select a structure by index (called from BuildingPicker signal)
 
@@ -1062,6 +1149,10 @@ func update_structure():
 
 func update_cash():
 	cash_display.text = str(map.cash) + "g"
+
+	if _freebuild:
+		cash_display.add_theme_color_override("font_color", _FREEBUILD_COLOR)
+		return
 
 	var threshold_red:    int = int(Global.starting_cash * 0.10)
 	var threshold_yellow: int = int(Global.starting_cash * 0.20)
@@ -1458,6 +1549,11 @@ func _start_intermission() -> void:
 	_intermission_active = true
 	_intermission_timer = 0.0
 
+	# Release UI focus so Space/Enter can't re-trigger toolbar buttons
+	var focused := get_viewport().gui_get_focus_owner()
+	if focused:
+		focused.release_focus()
+
 	# Block camera input during intermission
 	if view_node:
 		view_node.block_input = true
@@ -1495,15 +1591,13 @@ func _start_intermission() -> void:
 		_intermission_node = Intermission.new()
 		add_child(_intermission_node)
 		var ok: bool = _intermission_node.setup({
-			"gridmap": gridmap,
-			"decoration_gridmap": decoration_gridmap,
+			"nav_walls": _nav_walls,
+			"nav_passable": _nav_passable,
 			"items_gridmap": items_gridmap,
-			"terrain_gridmap": terrain_gridmap,
 			"animated_instances": _animated_instances,
 			"animated_struct_idx": _animated_struct_idx,
 			"structures": structures,
 			"item_id_to_struct": _item_id_to_struct,
-			"deco_id_to_struct": _deco_id_to_struct,
 			"view_node": view_node,
 			"party_type": _current_party_type,
 			"stairs_pos": _stairs_position,
@@ -1820,6 +1914,7 @@ func _do_load(path: String) -> void:
 							var child := Vector3i(gpos.x - off_x + dx, gpos.y, gpos.z - off_z + dz)
 							_multi_cell_anchor[child] = gpos
 							terrain_gridmap.set_cell_item(child, -1)
+	_nav_rebuild()
 	_update_date_display()
 
 

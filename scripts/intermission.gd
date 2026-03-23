@@ -9,8 +9,10 @@ class_name Intermission
 signal finished  # emitted when the intermission is done
 
 const DURATION: float = 30.0
-const WALK_SPEED: float = 3.0        # tiles per second
+const MIN_WALK_SPEED: float = 2.5    # minimum tiles per second (small dungeons)
+const MAX_WALK_SPEED: float = 12.0   # maximum tiles per second (huge dungeons)
 const INTERACTION_PAUSE: float = 1.5  # seconds to pause at a point of interest
+var _walk_speed: float = 3.0         # actual speed — scaled to path length at setup
 const PARTY_SPACING: float = 0.6      # distance between party members along path
 const CAMERA_OFFSET: Vector3 = Vector3(0, 4, 4)  # camera offset behind/above leader
 const CAMERA_ZOOM: float = 20.0
@@ -53,31 +55,29 @@ var _pause_timer: float = 0.0
 var _view_node: Node3D               # camera pivot
 var _poi_set: Dictionary = {}        # Vector3i -> String (point of interest type: "chest", "trap", "monster")
 var _visited_pois: Dictionary = {}   # Vector3i -> true (already interacted with)
+var _party_type: int = 0             # 0=Warriors, 1=Rogues, 2=Scholars
 
 # References passed in from builder
-var _gridmap: GridMap
-var _decoration_gridmap: GridMap
+var _nav_walls: Dictionary      # Vector2i -> String  (solid walls from builder)
+var _nav_passable: Dictionary   # Vector2i -> String  (passable openings from builder)
 var _items_gridmap: GridMap
-var _terrain_gridmap: GridMap
 var _animated_instances: Dictionary
 var _animated_struct_idx: Dictionary
 var _structures: Array[Structure]
 var _item_id_to_struct: Dictionary
-var _deco_id_to_struct: Dictionary
 
 
 func setup(params: Dictionary) -> bool:
-	_gridmap = params.get("gridmap")
-	_decoration_gridmap = params.get("decoration_gridmap")
+	_nav_walls = params.get("nav_walls", {})
+	_nav_passable = params.get("nav_passable", {})
 	_items_gridmap = params.get("items_gridmap")
-	_terrain_gridmap = params.get("terrain_gridmap")
 	_animated_instances = params.get("animated_instances", {})
 	_animated_struct_idx = params.get("animated_struct_idx", {})
 	_structures = params.get("structures", [])
 	_item_id_to_struct = params.get("item_id_to_struct", {})
-	_deco_id_to_struct = params.get("deco_id_to_struct", {})
 	_view_node = params.get("view_node")
 	var party_type: int = params.get("party_type", 0)
+	_party_type = party_type
 	var stairs_pos = params.get("stairs_pos")  # Vector3i or null
 	var trophy_pos = params.get("trophy_pos")  # Vector3i or null
 
@@ -90,103 +90,77 @@ func setup(params: Dictionary) -> bool:
 
 	print("[Intermission] Setup — stairs at %s, trophy at %s, party type %d" % [str(stairs_pos), str(trophy_pos), party_type])
 
-	# Build the A* graph
+	# Build the A* graph from the builder's pre-built wall map.
+	# The wall map (_nav_walls / _nav_passable) is maintained live by the
+	# builder on every build/demolish, so it always has the complete picture.
+	# Every cell within the bounding box is walkable UNLESS it's a solid wall.
 	var astar := AStar3D.new()
 	var walkable: Dictionary = {}  # Vector3i -> point_id
-	var wall_cells: Dictionary = {}
-	var gate_cells: Dictionary = {}
 
-	# Wall-layer items that adventurers CAN walk through
-	const PASSABLE_WALLS: Array[String] = [
-		"Wall Opening", "Wall Gate", "Gate",
-	]
-
-	# Gather walls — only SOLID walls block pathfinding
-	if _decoration_gridmap:
-		for cell in _decoration_gridmap.get_used_cells():
-			var mid: int = _decoration_gridmap.get_cell_item(cell)
-			var is_passable: bool = false
-			if mid in _deco_id_to_struct:
-				var s: Structure = _structures[_deco_id_to_struct[mid]]
-				for keyword in PASSABLE_WALLS:
-					if s.display_name.contains(keyword):
-						is_passable = true
-						break
-			if is_passable:
-				gate_cells[cell] = true  # treat as passable opening
-			else:
-				wall_cells[cell] = true
-
-	# Gather gate positions from animated instances (animated Gate model)
-	for pos in _animated_instances:
-		var s_idx: int = _animated_struct_idx.get(pos, -1)
-		if s_idx != -1 and s_idx < _structures.size():
-			if _structures[s_idx].display_name.contains("Gate"):
-				gate_cells[pos] = true
-
-	# Compute bounding box of all placed structures (walls + items + floors)
-	# to limit terrain pathfinding to the dungeon area only
+	# Compute bounding box from ALL wall + passable positions + items + animated
 	var bounds_min_x: int = stairs_pos.x
 	var bounds_max_x: int = stairs_pos.x
 	var bounds_min_z: int = stairs_pos.z
 	var bounds_max_z: int = stairs_pos.z
-	var _expand_bounds := func(cells: Array) -> void:
-		for cell in cells:
-			bounds_min_x = mini(bounds_min_x, int(cell.x))
-			bounds_max_x = maxi(bounds_max_x, int(cell.x))
-			bounds_min_z = mini(bounds_min_z, int(cell.z))
-			bounds_max_z = maxi(bounds_max_z, int(cell.z))
-	_expand_bounds.call(_gridmap.get_used_cells())
-	if _decoration_gridmap:
-		_expand_bounds.call(_decoration_gridmap.get_used_cells())
-	if _items_gridmap:
-		_expand_bounds.call(_items_gridmap.get_used_cells())
+	for xz in _nav_walls:
+		bounds_min_x = mini(bounds_min_x, xz.x)
+		bounds_max_x = maxi(bounds_max_x, xz.x)
+		bounds_min_z = mini(bounds_min_z, xz.y)
+		bounds_max_z = maxi(bounds_max_z, xz.y)
+	for xz in _nav_passable:
+		bounds_min_x = mini(bounds_min_x, xz.x)
+		bounds_max_x = maxi(bounds_max_x, xz.x)
+		bounds_min_z = mini(bounds_min_z, xz.y)
+		bounds_max_z = maxi(bounds_max_z, xz.y)
 	for pos in _animated_instances:
 		bounds_min_x = mini(bounds_min_x, pos.x)
 		bounds_max_x = maxi(bounds_max_x, pos.x)
 		bounds_min_z = mini(bounds_min_z, pos.z)
 		bounds_max_z = maxi(bounds_max_z, pos.z)
-	# Add margin of 2 tiles around the dungeon
+	if _items_gridmap:
+		for cell in _items_gridmap.get_used_cells():
+			bounds_min_x = mini(bounds_min_x, cell.x)
+			bounds_max_x = maxi(bounds_max_x, cell.x)
+			bounds_min_z = mini(bounds_min_z, cell.z)
+			bounds_max_z = maxi(bounds_max_z, cell.z)
+	# Add margin around the dungeon
 	bounds_min_x -= 2
 	bounds_max_x += 2
 	bounds_min_z -= 2
 	bounds_max_z += 2
 
-	# Build walkable set from ALL floor tiles — player-placed AND terrain
-	print("[Intermission] Walls: %d, Gates: %d, Bounds: (%d,%d)-(%d,%d)" % [wall_cells.size(), gate_cells.size(), bounds_min_x, bounds_min_z, bounds_max_x, bounds_max_z])
+	# Every cell within bounds that is NOT a solid wall → walkable
 	var point_id: int = 0
-	# Player-placed floors (gridmap layer 0)
-	for cell in _gridmap.get_used_cells():
-		if cell.y != 0:
-			continue
-		if cell in wall_cells:
-			continue
-		walkable[cell] = point_id
-		astar.add_point(point_id, Vector3(cell.x, 0, cell.z))
-		point_id += 1
-	# Terrain floors — only within the dungeon bounding box
-	if _terrain_gridmap:
-		for cell in _terrain_gridmap.get_used_cells():
-			if cell.y != 0:
-				continue
-			if cell.x < bounds_min_x or cell.x > bounds_max_x:
-				continue
-			if cell.z < bounds_min_z or cell.z > bounds_max_z:
-				continue
-			if cell in wall_cells or cell in walkable:
-				continue
+	for x in range(bounds_min_x, bounds_max_x + 1):
+		for z in range(bounds_min_z, bounds_max_z + 1):
+			var xz := Vector2i(x, z)
+			if xz in _nav_walls:
+				continue  # solid wall — blocked
+			var cell := Vector3i(x, 0, z)
 			walkable[cell] = point_id
-			astar.add_point(point_id, Vector3(cell.x, 0, cell.z))
+			astar.add_point(point_id, Vector3(x, 0, z))
 			point_id += 1
 
-	# Also add gate positions as walkable (gates are passable)
-	for gpos in gate_cells:
-		if gpos not in walkable:
-			walkable[gpos] = point_id
-			astar.add_point(point_id, Vector3(gpos.x, 0, gpos.z))
-			point_id += 1
+	print("[Intermission] Nav walls: %d, Passable: %d, Bounds: (%d,%d)-(%d,%d), Walkable: %d" % [_nav_walls.size(), _nav_passable.size(), bounds_min_x, bounds_min_z, bounds_max_x, bounds_max_z, walkable.size()])
 
-	print("[Intermission] Walkable tiles: %d" % walkable.size())
+	# Debug: print a grid map of the dungeon layout
+	print("[Intermission] === DUNGEON MAP (S=stairs, T=trophy, W=wall, O=opening, .=open) ===")
+	for z in range(bounds_min_z, bounds_max_z + 1):
+		var row: String = ""
+		for x in range(bounds_min_x, bounds_max_x + 1):
+			var xz := Vector2i(x, z)
+			if x == stairs_pos.x and z == stairs_pos.z:
+				row += "S "
+			elif x == trophy_pos.x and z == trophy_pos.z:
+				row += "T "
+			elif xz in _nav_walls:
+				row += "W "
+			elif xz in _nav_passable:
+				row += "O "
+			else:
+				row += ". "
+		print("[Map z=%2d] %s" % [z, row])
+	print("[Intermission] === END MAP ===")
 
 	# Connect cardinal neighbors
 	for cell in walkable:
@@ -197,26 +171,20 @@ func setup(params: Dictionary) -> bool:
 				if not astar.are_points_connected(pid, nid):
 					astar.connect_points(pid, nid)
 
-	# Ensure stairs and trophy are in the walkable graph (they sit on items layer, may lack floor)
+	# Ensure stairs and trophy are in the walkable graph
 	var stairs_v3i := Vector3i(stairs_pos.x, 0, stairs_pos.z)
 	var trophy_v3i := Vector3i(trophy_pos.x, 0, trophy_pos.z)
 
-	# Force-add both key cells and their immediate neighbors as walkable
 	for key_cell in [stairs_v3i, trophy_v3i]:
 		if key_cell not in walkable:
 			walkable[key_cell] = point_id
 			astar.add_point(point_id, Vector3(key_cell.x, 0, key_cell.z))
 			point_id += 1
-
-	# Connect ALL walkable tiles again (including newly added stairs/trophy)
-	# This ensures everything is fully linked
-	for cell in walkable:
-		var pid: int = walkable[cell]
-		for neighbor in _cardinal_neighbors(cell):
-			if neighbor in walkable:
-				var nid: int = walkable[neighbor]
-				if not astar.are_points_connected(pid, nid):
-					astar.connect_points(pid, nid)
+			for neighbor in _cardinal_neighbors(key_cell):
+				if neighbor in walkable:
+					var nid: int = walkable[neighbor]
+					if not astar.are_points_connected(walkable[key_cell], nid):
+						astar.connect_points(walkable[key_cell], nid)
 
 	var stairs_id: int = walkable[stairs_v3i]
 	var trophy_id: int = walkable[trophy_v3i]
@@ -226,12 +194,6 @@ func setup(params: Dictionary) -> bool:
 	var trophy_conns := astar.get_point_connections(trophy_id)
 	print("[Intermission] Stairs at %s — %d connections" % [str(stairs_v3i), stairs_conns.size()])
 	print("[Intermission] Trophy at %s — %d connections" % [str(trophy_v3i), trophy_conns.size()])
-
-	# Debug: check if stairs cell is blocked by a wall
-	if stairs_v3i in wall_cells:
-		print("[Intermission] WARNING: Stairs position has a wall on it!")
-	if trophy_v3i in wall_cells:
-		print("[Intermission] WARNING: Trophy position has a wall on it!")
 
 	# If either has zero connections, try to use an adjacent walkable tile
 	if stairs_conns.is_empty():
@@ -249,35 +211,7 @@ func setup(params: Dictionary) -> bool:
 				trophy_id = walkable[trophy_v3i]
 				break
 
-	# Try to get the path
-	var path_out: PackedVector3Array = astar.get_point_path(stairs_id, trophy_id)
-	if path_out.is_empty():
-		print("[Intermission] No path from stairs to trophy!")
-		print("[Intermission] Stairs id=%d pos=%s, Trophy id=%d pos=%s" % [stairs_id, str(astar.get_point_position(stairs_id)), trophy_id, str(astar.get_point_position(trophy_id))])
-		# Debug: check what stairs CAN reach
-		var reachable: int = 0
-		for pid in walkable.values():
-			var test := astar.get_point_path(stairs_id, pid)
-			if not test.is_empty():
-				reachable += 1
-		print("[Intermission] Stairs can reach %d / %d walkable tiles" % [reachable, walkable.size()])
-		return false
-
-	var path_back: PackedVector3Array = astar.get_point_path(trophy_id, stairs_id)
-	print("[Intermission] Path: stairs → trophy = %d tiles, trophy → stairs = %d tiles" % [path_out.size(), path_back.size()])
-
-	# Combine into one continuous path
-	_path_points = PackedVector3Array()
-	for p in path_out:
-		_path_points.append(p)
-	# Skip first point of return path (it's the same as the last of outbound)
-	for i in range(1, path_back.size()):
-		_path_points.append(path_back[i])
-
-	if _path_points.size() < 2:
-		return false
-
-	# Build points of interest map
+	# ── Build points of interest map (needed BEFORE path routing) ────────────
 	_poi_set.clear()
 	_visited_pois.clear()
 
@@ -287,7 +221,7 @@ func setup(params: Dictionary) -> bool:
 		if s_idx == -1 or s_idx >= _structures.size():
 			continue
 		var sname: String = _structures[s_idx].display_name
-		var poi_cell := Vector3i(pos.x, 0, pos.z)  # normalize to ground y for path matching
+		var poi_cell := Vector3i(pos.x, 0, pos.z)
 		if sname.contains("Chest"):
 			_poi_set[poi_cell] = "chest"
 		elif sname.contains("Trap"):
@@ -303,9 +237,118 @@ func setup(params: Dictionary) -> bool:
 				var s: Structure = _structures[_item_id_to_struct[mid]]
 				var poi_cell := Vector3i(cell.x, 0, cell.z)
 				if poi_cell in _poi_set:
-					continue  # already has a more interesting POI
+					continue
 				if s.display_name.contains("Coin") or s.display_name.contains("Trophy"):
 					_poi_set[poi_cell] = "treasure"
+
+	# ── Party-specific waypoint routing ──────────────────────────────────────
+	# Warriors:  hunt monsters first, then trophy, then exit
+	# Rogues:    seek treasure/chests first, then trophy, then exit
+	# Scholars:  explore every reachable corner, then trophy, then exit
+	var waypoints: Array[Vector3i] = []  # intermediate stops between stairs and trophy
+
+	match party_type:
+		0:  # Warriors — hunt monsters
+			var monster_pois: Array[Vector3i] = []
+			for poi_cell in _poi_set:
+				if _poi_set[poi_cell] == "monster":
+					if poi_cell in walkable:
+						monster_pois.append(poi_cell)
+			# Sort by distance from stairs so they visit nearest first
+			monster_pois.sort_custom(func(a, b):
+				return stairs_v3i.distance_squared_to(a) < stairs_v3i.distance_squared_to(b))
+			waypoints = monster_pois
+			print("[Intermission] Warriors hunting %d monsters" % waypoints.size())
+
+		1:  # Rogues — seek treasure and chests
+			var loot_pois: Array[Vector3i] = []
+			for poi_cell in _poi_set:
+				if _poi_set[poi_cell] in ["chest", "treasure"]:
+					if poi_cell in walkable:
+						loot_pois.append(poi_cell)
+			# Sort by distance from stairs
+			loot_pois.sort_custom(func(a, b):
+				return stairs_v3i.distance_squared_to(a) < stairs_v3i.distance_squared_to(b))
+			waypoints = loot_pois
+			print("[Intermission] Rogues seeking %d treasure spots" % waypoints.size())
+
+		2:  # Scholars — explore every corner of the dungeon
+			# Find the farthest reachable corners/extremes to visit
+			var explore_targets: Array[Vector3i] = []
+			# Gather the 4 extreme walkable cells (min-x, max-x, min-z, max-z)
+			var min_x_cell := stairs_v3i
+			var max_x_cell := stairs_v3i
+			var min_z_cell := stairs_v3i
+			var max_z_cell := stairs_v3i
+			for cell in walkable:
+				# Only consider cells reachable from stairs
+				var pid: int = walkable[cell]
+				var test := astar.get_point_path(stairs_id, pid)
+				if test.is_empty():
+					continue
+				if cell.x < min_x_cell.x:
+					min_x_cell = cell
+				if cell.x > max_x_cell.x:
+					max_x_cell = cell
+				if cell.z < min_z_cell.z:
+					min_z_cell = cell
+				if cell.z > max_z_cell.z:
+					max_z_cell = cell
+			# Visit extremes that aren't the stairs or trophy themselves
+			for target in [min_z_cell, max_x_cell, max_z_cell, min_x_cell]:
+				if target != stairs_v3i and target != trophy_v3i:
+					if target not in explore_targets:
+						explore_targets.append(target)
+			waypoints = explore_targets
+			print("[Intermission] Scholars exploring %d corners" % waypoints.size())
+
+	# ── Build the full path: stairs → [waypoints] → trophy → stairs ──────
+	# Filter waypoints to only those reachable from stairs
+	var reachable_waypoints: Array[Vector3i] = []
+	for wp in waypoints:
+		if wp in walkable:
+			var wp_id: int = walkable[wp]
+			var test := astar.get_point_path(stairs_id, wp_id)
+			if not test.is_empty():
+				reachable_waypoints.append(wp)
+
+	# Build ordered stop list: stairs → waypoints → trophy → stairs
+	var stops: Array[Vector3i] = [stairs_v3i]
+	stops.append_array(reachable_waypoints)
+	stops.append(trophy_v3i)
+	stops.append(stairs_v3i)
+
+	# Chain A* paths between consecutive stops
+	_path_points = PackedVector3Array()
+	for i in range(stops.size() - 1):
+		var from_id: int = walkable.get(stops[i], -1)
+		var to_id: int = walkable.get(stops[i + 1], -1)
+		if from_id == -1 or to_id == -1:
+			continue
+		var segment: PackedVector3Array = astar.get_point_path(from_id, to_id)
+		if segment.is_empty():
+			print("[Intermission] No path from %s to %s — skipping waypoint" % [str(stops[i]), str(stops[i + 1])])
+			continue
+		# Append segment (skip first point if not the first segment to avoid duplicates)
+		var start_idx: int = 0 if _path_points.is_empty() else 1
+		for j in range(start_idx, segment.size()):
+			_path_points.append(segment[j])
+
+	if _path_points.size() < 2:
+		print("[Intermission] No valid path could be built!")
+		return false
+
+	# Scale walk speed so the party finishes comfortably within DURATION.
+	# Measure total path length in tiles, then pick a speed that completes
+	# in ~80% of DURATION (leaving 20% headroom for POI pauses).
+	var total_path_length: float = 0.0
+	for i in range(_path_points.size() - 1):
+		total_path_length += _path_points[i].distance_to(_path_points[i + 1])
+	var target_time: float = DURATION * 0.8  # 80% of total time for walking
+	_walk_speed = clampf(total_path_length / target_time, MIN_WALK_SPEED, MAX_WALK_SPEED)
+
+	var type_label: String = ["Warriors", "Rogues", "Scholars"][mini(party_type, 2)]
+	print("[Intermission] %s path: %d waypoints, %.0f tiles, speed=%.1f t/s (stairs → %d detours → trophy → stairs)" % [type_label, _path_points.size(), total_path_length, _walk_speed, reachable_waypoints.size()])
 
 	# Spawn party models
 	_spawn_party(party_type)
@@ -334,6 +377,16 @@ func process_tick(delta: float) -> void:
 
 	_timer += delta
 
+	# Skip intermission early with Escape or Space (raw key, not ui_accept
+	# which would re-trigger a focused Play button).
+	# Wait 0.5s before accepting skip so a held Space from the Play button
+	# click doesn't immediately end the intermission.
+	if _timer > 0.5:
+		if Input.is_key_pressed(KEY_ESCAPE) or Input.is_physical_key_pressed(KEY_SPACE):
+			print("[Intermission] Skipped by player")
+			_cleanup()
+			return
+
 	# Time's up or path finished
 	if _timer >= DURATION or _path_index >= _path_points.size() - 1:
 		_cleanup()
@@ -344,11 +397,10 @@ func process_tick(delta: float) -> void:
 		_pause_timer -= delta
 		if _pause_timer <= 0.0:
 			_paused = false
-			# Resume walk animation on leader
-			if not _party.is_empty():
-				var leader = _party[0]
-				if leader.anim and leader.anim.has_animation(WALK_ANIM):
-					leader.anim.play(WALK_ANIM)
+			# Resume walk animation on ALL party members
+			for member in _party:
+				if member.anim and member.anim.has_animation(WALK_ANIM):
+					member.anim.play(WALK_ANIM)
 		else:
 			_update_camera(delta)
 			return
@@ -360,7 +412,7 @@ func process_tick(delta: float) -> void:
 	if segment_length < 0.01:
 		segment_length = 0.01
 
-	_path_progress += (WALK_SPEED * delta) / segment_length
+	_path_progress += (_walk_speed * delta) / segment_length
 
 	if _path_progress >= 1.0:
 		_path_progress = 0.0
@@ -479,29 +531,51 @@ func _interact_with_poi(cell: Vector3i, poi_type: String) -> void:
 
 	match poi_type:
 		"chest":
-			# Leader plays pick-up animation
-			if leader.anim and leader.anim.has_animation(PICKUP_ANIM):
-				leader.anim.play(PICKUP_ANIM)
-			# Try to trigger the chest's open animation
 			_trigger_poi_animation(cell, "open")
+			if _party_type == 1:  # Rogues — all rush to loot
+				_pause_timer = INTERACTION_PAUSE * 1.5  # take their time looting
+				for member in _party:
+					_play_member_anim(member, PICKUP_ANIM)
+			else:
+				_play_member_anim(leader, PICKUP_ANIM)
 		"trap":
-			# Leader plays jump (dodge) animation
-			if leader.anim and leader.anim.has_animation(JUMP_ANIM):
-				leader.anim.play(JUMP_ANIM)
 			_trigger_poi_animation(cell, "open-close")
+			if _party_type == 0:  # Warriors — jump over bravely
+				_play_member_anim(leader, JUMP_ANIM)
+			elif _party_type == 2:  # Scholars — crouch to examine
+				_play_member_anim(leader, "crouch")
+				_pause_timer = INTERACTION_PAUSE * 1.5  # study it
+			else:  # Rogues — nimble dodge
+				_play_member_anim(leader, JUMP_ANIM)
 		"monster":
-			# Leader plays idle (fighting stance) — we don't have an attack anim
-			if leader.anim and leader.anim.has_animation(IDLE_ANIM):
-				leader.anim.play(IDLE_ANIM)
+			if _party_type == 0:  # Warriors — everyone fights!
+				_pause_timer = INTERACTION_PAUSE * 2.0  # longer battle
+				for member in _party:
+					_play_member_anim(member, IDLE_ANIM)  # fighting stance
+			elif _party_type == 2:  # Scholars — observe cautiously
+				_play_member_anim(leader, "crouch")
+				_pause_timer = INTERACTION_PAUSE * 1.5
+			else:  # Rogues — leader distracts, others idle
+				_play_member_anim(leader, IDLE_ANIM)
 		"treasure":
-			# Leader bends down to pick up
-			if leader.anim and leader.anim.has_animation(PICKUP_ANIM):
-				leader.anim.play(PICKUP_ANIM)
+			if _party_type == 1:  # Rogues — everyone grabs loot
+				for member in _party:
+					_play_member_anim(member, PICKUP_ANIM)
+			else:
+				_play_member_anim(leader, PICKUP_ANIM)
 
-	# Other party members play idle while waiting
+	# Party members not yet animated play idle while waiting
 	for i in range(1, _party.size()):
 		var member = _party[i]
-		if member.anim and member.anim.has_animation(IDLE_ANIM):
+		if member.anim and member.anim.current_animation == WALK_ANIM:
+			_play_member_anim(member, IDLE_ANIM)
+
+
+func _play_member_anim(member: Dictionary, anim_name: String) -> void:
+	if member.anim:
+		if member.anim.has_animation(anim_name):
+			member.anim.play(anim_name)
+		elif member.anim.has_animation(IDLE_ANIM):
 			member.anim.play(IDLE_ANIM)
 
 
