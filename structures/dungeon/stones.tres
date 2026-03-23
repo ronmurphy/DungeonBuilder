@@ -11,4 +11,5 @@ category = "Walls"
 model = ExtResource("1_model")
 price = 15
 layer = 1
+variation_group = "dungeon-rocks"
 thumbnail = ExtResource("3_thumb")

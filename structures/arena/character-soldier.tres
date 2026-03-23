@@ -11,4 +11,5 @@ category = "Characters"
 model = ExtResource("1_model")
 price = 75
 layer = 2
+variation_group = ""
 thumbnail = ExtResource("3_thumb")

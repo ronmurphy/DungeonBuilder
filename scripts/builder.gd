@@ -167,6 +167,18 @@ var _terrain_noise: FastNoiseLite = null
 var _terrain_mesh_ids: Dictionary = {}     # glb basename  -> mesh library id
 var _terrain_rewards: Dictionary  = {}     # mesh library id -> cash reward
 
+# Variation groups: group name -> array of structure indices (built in _ready)
+var _variation_groups: Dictionary = {}   # String -> Array[int]
+
+# Texture variation system — swap color textures on models with Z key
+var _struct_variation_ids: Array = []       # per-structure: Array of mesh library IDs [base, var_a, var_b, ...]
+var _pending_mid: int = -1                  # current mesh library ID to place (base or variant)
+var _pending_variation_tex: Texture2D = null # texture override for preview cursor
+var _pending_variation_idx: int = 0         # current index into variation list
+var _variation_tex_cache: Dictionary = {}   # model texture dir -> Array[Texture2D]
+var _variation_mat_cache: Dictionary = {}   # "mat_id:tex_path" -> Material (cached for GPU batching)
+const _NO_VARIATION_CATEGORIES: Array[String] = ["Nature"]  # categories that skip texture variations
+
 # Animated scene instances — spawned as real Node3D instead of GridMap cells
 var _animated_instances: Dictionary = {}   # Vector3i -> Node3D (position -> scene instance)
 var _animated_struct_idx: Dictionary = {}  # Vector3i -> int (position -> structure index)
@@ -197,6 +209,14 @@ func _ready():
 	# Build separate MeshLibraries for base, decoration, and terrain layers
 	_build_mesh_libraries()
 	_build_terrain_mesh_library()
+
+	# Build variation group lookup
+	for i in range(structures.size()):
+		var grp: String = structures[i].variation_group
+		if grp != "":
+			if grp not in _variation_groups:
+				_variation_groups[grp] = []
+			_variation_groups[grp].append(i)
 
 	if Global.pending_load:
 		_do_load(Global.save_path())
@@ -246,6 +266,8 @@ func _process(delta):
 
 	# Keyboard / non-mouse controls always fire
 	action_cycle_structure()
+	action_cycle_variation()
+	action_cycle_texture()
 	action_rotate()
 	action_save()
 	action_load()
@@ -265,12 +287,14 @@ func _process(delta):
 	action_demolish(last_gridmap_position)
 
 # Build three MeshLibraries — one per layer — and record per-structure IDs
+# Also creates texture variation meshes for each structure that has variation textures.
 func _build_mesh_libraries() -> void:
 	var base_lib := MeshLibrary.new()
 	var deco_lib := MeshLibrary.new()
 	var item_lib := MeshLibrary.new()
 	_struct_mesh_id.clear()
 	_struct_layer.clear()
+	_struct_variation_ids.clear()
 	_base_id_to_struct.clear()
 	_deco_id_to_struct.clear()
 	_item_id_to_struct.clear()
@@ -280,6 +304,7 @@ func _build_mesh_libraries() -> void:
 		_struct_layer.append(s.layer)
 		if mesh == null:
 			_struct_mesh_id.append(-1)
+			_struct_variation_ids.append([])
 			continue
 		var lib: MeshLibrary
 		if s.layer == 2:
@@ -299,11 +324,78 @@ func _build_mesh_libraries() -> void:
 			_deco_id_to_struct[id] = i
 		else:
 			_base_id_to_struct[id] = i
+
+		# Build texture variations for this structure
+		var var_ids: Array = [id]  # index 0 = base mesh
+		if s.category not in _NO_VARIATION_CATEGORIES:
+			var textures: Array = _get_variation_textures(s)
+			for tex in textures:
+				var var_mesh: Mesh = _apply_texture_to_mesh(mesh, tex)
+				var vid := lib.get_last_unused_item_id()
+				lib.create_item(vid)
+				lib.set_item_mesh(vid, var_mesh)
+				lib.set_item_mesh_transform(vid, Transform3D())
+				var_ids.append(vid)
+				# Map variation IDs back to the same structure for demolish refunds
+				if s.layer == 2:
+					_item_id_to_struct[vid] = i
+				elif s.layer == 1:
+					_deco_id_to_struct[vid] = i
+				else:
+					_base_id_to_struct[vid] = i
+		_struct_variation_ids.append(var_ids)
+
 	gridmap.mesh_library = base_lib
 	if decoration_gridmap:
 		decoration_gridmap.mesh_library = deco_lib
 	if items_gridmap:
 		items_gridmap.mesh_library = item_lib
+	print("[Builder] Texture variations built: ", _struct_variation_ids.filter(func(a): return a.size() > 1).size(), " structures with variants")
+
+
+# Find variation texture files for a structure's model pack
+func _get_variation_textures(s: Structure) -> Array:
+	if s.model == null:
+		return []
+	var model_path: String = s.model.resource_path
+	# Walk up from the GLB file to find the Textures folder
+	# e.g. res://models/Mini Arena/Models/GLB format/wall.glb → res://models/Mini Arena/Models/Textures/
+	var dir: String = model_path.get_base_dir()  # .../GLB format
+	var parent_dir: String = dir.get_base_dir()   # .../Models
+	var tex_dir: String = parent_dir + "/Textures/"
+
+	# Check cache
+	if tex_dir in _variation_tex_cache:
+		return _variation_tex_cache[tex_dir]
+
+	var textures: Array = []
+	for letter in ["a", "b", "c", "d"]:
+		var path: String = tex_dir + "variation-" + letter + ".png"
+		if ResourceLoader.exists(path):
+			textures.append(load(path))
+		else:
+			break
+	_variation_tex_cache[tex_dir] = textures
+	if not textures.is_empty():
+		print("[Builder] Found %d variation textures in %s" % [textures.size(), tex_dir])
+	return textures
+
+
+# Create a duplicate mesh with a different albedo texture on all surfaces
+func _apply_texture_to_mesh(base_mesh: Mesh, tex: Texture2D) -> Mesh:
+	var new_mesh := base_mesh.duplicate() as Mesh
+	for surf_idx in new_mesh.get_surface_count():
+		var mat := new_mesh.surface_get_material(surf_idx)
+		if mat == null:
+			continue
+		var cache_key: String = str(mat.get_instance_id()) + ":" + tex.resource_path
+		if not _variation_mat_cache.has(cache_key):
+			var new_mat := mat.duplicate()
+			if new_mat is StandardMaterial3D:
+				(new_mat as StandardMaterial3D).albedo_texture = tex
+			_variation_mat_cache[cache_key] = new_mat
+		new_mesh.surface_set_material(surf_idx, _variation_mat_cache[cache_key])
+	return new_mesh
 
 # Build terrain MeshLibrary from Nature-category structures
 const TERRAIN_REWARDS: Dictionary = {
@@ -532,6 +624,97 @@ func action_cycle_structure() -> void:
 		Audio.play("sounds/toggle.ogg", -30)
 		update_structure()
 
+
+# Cycle variation with C key — swap to the next structure in the same variation group
+func action_cycle_variation() -> void:
+	if not Input.is_action_just_pressed("cycle_variation"):
+		return
+	if not _placing:
+		return
+	var grp: String = structures[index].variation_group
+	if grp == "" or grp not in _variation_groups:
+		return
+	var group: Array = _variation_groups[grp]
+	if group.size() <= 1:
+		return
+	# Find current position in the group and advance to the next
+	var pos: int = group.find(index)
+	if pos == -1:
+		return
+	var next_idx: int = group[(pos + 1) % group.size()]
+	index = next_idx
+	_pending_variation_idx = 0
+	_pending_variation_tex = null
+	if building_picker:
+		building_picker.set_selected_index(index)
+	Audio.play("sounds/toggle.ogg", -30)
+	update_structure()
+	print("[Builder] cycle_variation -> %s (group: %s)" % [structures[index].display_name, grp])
+
+
+# Cycle texture variation with Z key — swap albedo texture on the current structure
+func action_cycle_texture() -> void:
+	if not Input.is_action_just_pressed("cycle_texture"):
+		return
+	if not _placing:
+		return
+	if index >= _struct_variation_ids.size():
+		return
+	var ids: Array = _struct_variation_ids[index]
+	if ids.size() <= 1:
+		return
+	_pending_variation_idx = (_pending_variation_idx + 1) % ids.size()
+	_apply_variation_idx()
+	_update_preview_variation()
+	Audio.play("sounds/toggle.ogg", -30)
+	print("[Builder] cycle_texture -> variation %d/%d for %s" % [_pending_variation_idx, ids.size(), structures[index].display_name])
+
+
+# Set _pending_mid and _pending_variation_tex from the current variation index
+func _apply_variation_idx() -> void:
+	if index >= _struct_variation_ids.size():
+		return
+	var ids: Array = _struct_variation_ids[index]
+	if _pending_variation_idx >= ids.size():
+		_pending_variation_idx = 0
+	_pending_mid = ids[_pending_variation_idx]
+	# Determine which texture is active (index 0 = base, 1+ = variation textures)
+	if _pending_variation_idx == 0:
+		_pending_variation_tex = null
+	else:
+		var textures: Array = _get_variation_textures(structures[index])
+		var tex_idx: int = _pending_variation_idx - 1
+		if tex_idx < textures.size():
+			_pending_variation_tex = textures[tex_idx]
+		else:
+			_pending_variation_tex = null
+
+
+# Apply the current variation texture to the preview model in the selector cursor
+func _update_preview_variation() -> void:
+	if selector_container.get_child_count() == 0:
+		return
+	var model_node: Node3D = selector_container.get_child(0)
+	for child in model_node.get_children():
+		if child is MeshInstance3D:
+			var mi := child as MeshInstance3D
+			if _pending_variation_tex == null:
+				# Base texture — clear all overrides
+				for surf_idx in mi.get_surface_override_material_count():
+					mi.set_surface_override_material(surf_idx, null)
+			else:
+				# Apply variation texture to all surfaces
+				for surf_idx in mi.mesh.get_surface_count():
+					var mat := mi.get_active_material(surf_idx)
+					if mat == null:
+						continue
+					var new_mat := mat.duplicate()
+					if new_mat is StandardMaterial3D:
+						(new_mat as StandardMaterial3D).albedo_texture = _pending_variation_tex
+					mi.set_surface_override_material(surf_idx, new_mat)
+			break  # only process the first MeshInstance3D
+
+
 # Build (place) a structure
 
 func _get_footprint_cells(anchor: Vector3i, s: Structure) -> Array:
@@ -554,7 +737,8 @@ func action_build(gridmap_position):
 	if _is_over_picker():
 		return
 	if Input.is_action_just_pressed("build"):
-		var mid = _struct_mesh_id[index] if index < _struct_mesh_id.size() else -1
+		# Use the texture-variation mesh ID if one is active, otherwise use base
+		var mid: int = _pending_mid if _pending_mid >= 0 else (_struct_mesh_id[index] if index < _struct_mesh_id.size() else -1)
 		if mid == -1:
 			return
 		var layer: int = _struct_layer[index]
@@ -692,6 +876,8 @@ func action_rotate():
 
 func select_structure(new_index: int) -> void:
 	index = new_index
+	_pending_variation_idx = 0
+	_pending_variation_tex = null
 	_set_placing(true)
 	Audio.play("sounds/toggle.ogg", -30)
 	update_structure()
@@ -709,6 +895,9 @@ func update_structure():
 	var _model = structures[index].model.instantiate()
 	selector_container.add_child(_model)
 	_model.position.y += 0.25
+
+	# Reset texture variation to base when switching structures
+	_pending_mid = _struct_mesh_id[index] if index < _struct_mesh_id.size() else -1
 
 func update_cash():
 	cash_display.text = str(map.cash) + "g"
