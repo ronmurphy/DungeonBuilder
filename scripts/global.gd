@@ -33,6 +33,7 @@ func web_save(map: DataMap) -> bool:
 	for s: DataStructure in map.structures:
 		structs.append({
 			"px": s.position.x, "py": s.position.y,
+			"pos_y": s.pos_y,
 			"orientation": s.orientation,
 			"structure": s.structure,
 			"layer": s.layer,
@@ -89,6 +90,7 @@ func web_load() -> DataMap:
 	for sd in parsed["structures"]:
 		var ds := DataStructure.new()
 		ds.position    = Vector2i(int(sd["px"]), int(sd["py"]))
+		ds.pos_y       = int(sd.get("pos_y", 0))
 		ds.orientation = int(sd["orientation"])
 		ds.structure   = int(sd["structure"])
 		ds.layer       = int(sd["layer"])

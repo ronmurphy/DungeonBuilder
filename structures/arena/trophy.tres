@@ -6,10 +6,10 @@
 
 [resource]
 script = ExtResource("2_script")
-display_name = "Trophy"
+display_name = "Trophy [Req]"
 category = "Items"
 model = ExtResource("1_model")
-price = 50
+price = 0
 layer = 2
 variation_group = ""
 thumbnail = ExtResource("3_thumb")

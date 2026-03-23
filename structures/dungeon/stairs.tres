@@ -6,7 +6,7 @@
 
 [resource]
 script = ExtResource("2_script")
-display_name = "Dungeon Stairs"
+display_name = "Dungeon Stairs [Req]"
 category = "Items"
 model = ExtResource("1_model")
 price = 35

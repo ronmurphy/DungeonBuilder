@@ -200,6 +200,19 @@ const PICKER_WIDTH:int = 320 # Must match building_picker.gd offset_left
 const _SAVE_ICON = preload("res://graphics/icon_save.png")
 const _WARN_ICON = preload("res://graphics/information.png")
 
+# Vertical stacking
+const MAX_STACK_Y: int = 10     # maximum vertical cell scan height
+var _mesh_heights: Dictionary = {}   # mesh library ID -> float height (cached AABB.size.y)
+
+# Dungeon Stairs & Trophy — required entry/exit and goal for adventurers
+const REQUIRED_STAIRS_NAME: String = "Dungeon Stairs [Req]"
+const REQUIRED_TROPHY_NAME: String = "Trophy [Req]"
+var _stairs_position: Vector3i = Vector3i(-999, -999, -999)  # sentinel = no stairs placed
+var _trophy_position: Vector3i = Vector3i(-999, -999, -999)  # sentinel = no trophy placed
+var _has_stairs: bool = false
+var _has_trophy: bool = false
+var _intermission_node: Intermission = null  # active walk-through instance
+
 func _ready():
 
 	_load_structures()
@@ -279,7 +292,11 @@ func _process(delta):
 			view_camera.project_ray_origin(get_viewport().get_mouse_position()),
 			view_camera.project_ray_normal(get_viewport().get_mouse_position()))
 		if world_position:
-			last_gridmap_position = Vector3(round(world_position.x), 0, round(world_position.z))
+			var gx: int = int(round(world_position.x))
+			var gz: int = int(round(world_position.z))
+			# Scan vertically to find the top of whatever is at this column
+			var stack_y: float = _get_stack_height(gx, gz)
+			last_gridmap_position = Vector3(gx, stack_y, gz)
 
 	selector.position = lerp(selector.position, last_gridmap_position, min(delta * 40, 1.0))
 
@@ -350,6 +367,14 @@ func _build_mesh_libraries() -> void:
 		decoration_gridmap.mesh_library = deco_lib
 	if items_gridmap:
 		items_gridmap.mesh_library = item_lib
+
+	# Cache mesh heights for vertical stacking
+	_mesh_heights.clear()
+	for lib in [base_lib, deco_lib, item_lib]:
+		for mid in lib.get_item_list():
+			var m: Mesh = lib.get_item_mesh(mid)
+			if m:
+				_mesh_heights[mid] = m.get_aabb().size.y
 	print("[Builder] Texture variations built: ", _struct_variation_ids.filter(func(a): return a.size() > 1).size(), " structures with variants")
 
 
@@ -515,7 +540,7 @@ func _is_character_model(s: Structure) -> bool:
 
 func _spawn_animated(s: Structure, struct_idx: int, pos: Vector3i, orientation: int) -> void:
 	var instance: Node3D = s.model.instantiate()
-	instance.position = Vector3(pos.x, 0, pos.z)
+	instance.position = Vector3(pos.x, float(pos.y), pos.z)
 	# Apply rotation from orientation index (0=0°, 1=90°, etc.)
 	# GridMap orientation 10=90°, 22=180°, 16=270° but we'll use basis angle
 	match orientation:
@@ -715,6 +740,112 @@ func _update_preview_variation() -> void:
 			break  # only process the first MeshInstance3D
 
 
+# ── Vertical stacking helpers ──────────────────────────────────────────────────
+
+# Get the height of a mesh library item (cached AABB)
+func _get_mesh_height(lib: MeshLibrary, mid: int) -> float:
+	if mid in _mesh_heights:
+		return _mesh_heights[mid]
+	var m: Mesh = lib.get_item_mesh(mid)
+	if m:
+		var h: float = m.get_aabb().size.y
+		_mesh_heights[mid] = h
+		return h
+	return 1.0
+
+
+# Get the AABB height of an animated scene instance
+func _get_instance_height(instance: Node3D) -> float:
+	for child in instance.get_children():
+		if child is MeshInstance3D:
+			return (child as MeshInstance3D).get_aabb().size.y
+	return 1.0
+
+
+# Scan a single GridMap column at (x, z) from top down, return the world-Y of the top surface
+func _scan_gridmap_top(gm: GridMap, x: int, z: int) -> float:
+	if gm == null:
+		return 0.0
+	var top_y: float = 0.0
+	for cy in range(MAX_STACK_Y, -1, -1):
+		var cell := Vector3i(x, cy, z)
+		var mid: int = gm.get_cell_item(cell)
+		if mid != -1:
+			var h: float = _mesh_heights.get(mid, 1.0)
+			var cell_top: float = float(cy) * gm.cell_size.y + h
+			top_y = maxf(top_y, cell_top)
+			break  # found the topmost cell in this column
+	return top_y
+
+
+# Get the stacking height at a world x, z — scans all GridMaps and animated instances
+func _get_stack_height(gx: int, gz: int) -> float:
+	var max_y: float = 0.0
+
+	# Scan each GridMap for the topmost cell
+	max_y = maxf(max_y, _scan_gridmap_top(gridmap, gx, gz))
+	max_y = maxf(max_y, _scan_gridmap_top(decoration_gridmap, gx, gz))
+	max_y = maxf(max_y, _scan_gridmap_top(items_gridmap, gx, gz))
+
+	# Check animated instances at any Y level at this x, z
+	for pos in _animated_instances:
+		if pos.x == gx and pos.z == gz:
+			var instance: Node3D = _animated_instances[pos]
+			var h: float = _get_instance_height(instance)
+			var top: float = instance.position.y + h
+			max_y = maxf(max_y, top)
+
+	return max_y
+
+
+# Convert a world-space Y height to a GridMap cell Y index
+func _height_to_cell_y(height: float) -> int:
+	# Round to nearest integer cell — cell_size.y is 1.0
+	return int(round(height))
+
+
+# Find the topmost occupied cell Y at (x, z) for demolish — returns [GridMap/null, Vector3i, is_animated]
+func _find_topmost_at(gx: int, gz: int) -> Dictionary:
+	var best_y: float = -1.0
+	var result: Dictionary = {}
+
+	# Check animated instances first (they have exact float Y positions)
+	for pos in _animated_instances:
+		if pos.x == gx and pos.z == gz:
+			var instance: Node3D = _animated_instances[pos]
+			if instance.position.y >= best_y:
+				best_y = instance.position.y
+				result = { "type": "animated", "pos": pos, "world_y": instance.position.y }
+
+	# Check each GridMap from top down
+	for gm_info in [
+		{ "gm": items_gridmap, "layer": 2, "lookup": _item_id_to_struct },
+		{ "gm": decoration_gridmap, "layer": 1, "lookup": _deco_id_to_struct },
+		{ "gm": gridmap, "layer": 0, "lookup": _base_id_to_struct },
+	]:
+		var gm: GridMap = gm_info["gm"]
+		if gm == null:
+			continue
+		for cy in range(MAX_STACK_Y, -1, -1):
+			var cell := Vector3i(gx, cy, gz)
+			var mid: int = gm.get_cell_item(cell)
+			if mid != -1:
+				var world_y: float = float(cy) * gm.cell_size.y
+				if world_y > best_y:
+					best_y = world_y
+					result = {
+						"type": "gridmap",
+						"gm": gm,
+						"cell": cell,
+						"mid": mid,
+						"layer": gm_info["layer"],
+						"lookup": gm_info["lookup"],
+					}
+				break  # only check topmost in this gridmap column
+
+	return result
+
+
 # Build (place) a structure
 
 func _get_footprint_cells(anchor: Vector3i, s: Structure) -> Array:
@@ -743,8 +874,18 @@ func action_build(gridmap_position):
 			return
 		var layer: int = _struct_layer[index]
 		var s: Structure = structures[index]
-		var anchor := Vector3i(gridmap_position)
+		# Use the cursor's Y position (from stack scan) to determine cell Y
+		var cell_y: int = _height_to_cell_y(gridmap_position.y)
+		var anchor := Vector3i(int(gridmap_position.x), cell_y, int(gridmap_position.z))
 		var fp_cells: Array = _get_footprint_cells(anchor, s)
+
+		# Enforce single placement of required items
+		if s.display_name == REQUIRED_STAIRS_NAME and _has_stairs:
+			Toast.notify("Only one set of Dungeon Stairs allowed!", _WARN_ICON)
+			return
+		if s.display_name == REQUIRED_TROPHY_NAME and _has_trophy:
+			Toast.notify("Only one Trophy allowed!", _WARN_ICON)
+			return
 
 		# Base floor tiles (layer 0) check footprint is clear before placing
 		if layer == 0:
@@ -756,7 +897,7 @@ func action_build(gridmap_position):
 
 		# Animated models (characters, chest, gate, trap) → spawn as scene instance
 		if _is_animated_structure(s):
-			# Don't stack animated instances on same cell
+			# Don't stack animated instances on exact same position
 			if anchor in _animated_instances:
 				Toast.notify("Something is already here!", _WARN_ICON)
 				return
@@ -767,7 +908,7 @@ func action_build(gridmap_position):
 			Audio.play("sounds/placement-a.ogg, sounds/placement-b.ogg, sounds/placement-c.ogg, sounds/placement-d.ogg", -20)
 			return
 
-		# Non-animated models → place in appropriate GridMap
+		# Non-animated models → place in appropriate GridMap at the correct Y cell
 		var target_map: GridMap
 		if layer == 2:
 			target_map = items_gridmap
@@ -779,8 +920,8 @@ func action_build(gridmap_position):
 			return
 		var rotation_idx = target_map.get_orthogonal_index_from_basis(selector.basis)
 
-		var previous_tile = target_map.get_cell_item(gridmap_position)
-		target_map.set_cell_item(gridmap_position, mid, rotation_idx)
+		var previous_tile = target_map.get_cell_item(anchor)
+		target_map.set_cell_item(anchor, mid, rotation_idx)
 
 		# Register multi-cell footprint so child cells block future placement
 		if layer == 0:
@@ -788,8 +929,8 @@ func action_build(gridmap_position):
 				for cell in fp_cells:
 					_multi_cell_anchor[Vector3i(cell)] = anchor
 
-		# Clear terrain tiles under base floor tiles
-		if layer == 0 and terrain_gridmap:
+		# Clear terrain tiles under base floor tiles (only at ground level)
+		if layer == 0 and terrain_gridmap and cell_y == 0:
 			for cell in fp_cells:
 				var vcell := Vector3i(cell)
 				var terrain_tile := terrain_gridmap.get_cell_item(vcell)
@@ -801,65 +942,85 @@ func action_build(gridmap_position):
 			update_cash()
 			Audio.play("sounds/placement-a.ogg, sounds/placement-b.ogg, sounds/placement-c.ogg, sounds/placement-d.ogg", -20)
 
+		# Track required item placement
+		if s.display_name == REQUIRED_STAIRS_NAME:
+			_stairs_position = anchor
+			_has_stairs = true
+			print("[Builder] Dungeon Stairs placed at %s" % str(anchor))
+		elif s.display_name == REQUIRED_TROPHY_NAME:
+			_trophy_position = anchor
+			_has_trophy = true
+			print("[Builder] Trophy placed at %s" % str(anchor))
+
 # Demolish (remove) a structure — animated first, then items, then walls, then floors
 
 func action_demolish(gridmap_position):
 	if Input.is_action_just_pressed("demolish"):
+		var gx: int = int(round(gridmap_position.x))
+		var gz: int = int(round(gridmap_position.z))
+		var top := _find_topmost_at(gx, gz)
+		if top.is_empty():
+			return
 		var removed := false
-		var pos := Vector3i(gridmap_position)
-		# Animated instances (topmost, removed first)
-		if pos in _animated_instances:
-			var s_idx: int = _animated_struct_idx.get(pos, -1)
+
+		if top["type"] == "animated":
+			var apos: Vector3i = top["pos"]
+			var s_idx: int = _animated_struct_idx.get(apos, -1)
 			if s_idx != -1:
 				var refund := ceili(structures[s_idx].price / 2.0)
 				map.cash += refund
 				update_cash()
-			_remove_animated(pos)
+			_remove_animated(apos)
 			removed = true
-		# Layer 2 — static items
-		elif items_gridmap and items_gridmap.get_cell_item(pos) != -1:
-			var mid := items_gridmap.get_cell_item(pos)
-			items_gridmap.set_cell_item(pos, -1)
-			if mid in _item_id_to_struct:
-				var refund := ceili(structures[_item_id_to_struct[mid]].price / 2.0)
-				map.cash += refund
-				update_cash()
-			removed = true
-		# Layer 1 — walls / decoration
-		elif decoration_gridmap and decoration_gridmap.get_cell_item(pos) != -1:
-			var mid := decoration_gridmap.get_cell_item(pos)
-			decoration_gridmap.set_cell_item(pos, -1)
-			if mid in _deco_id_to_struct:
-				var refund := ceili(structures[_deco_id_to_struct[mid]].price / 2.0)
-				map.cash += refund
-				update_cash()
-			removed = true
-		# Layer 0 — base floor tiles
-		elif gridmap.get_cell_item(pos) != -1 or _multi_cell_anchor.has(pos):
-			var anchor: Vector3i = _multi_cell_anchor.get(pos, pos) as Vector3i
-			var mid := gridmap.get_cell_item(anchor)
-			if mid == -1:
-				return
-			var s_idx: int = _base_id_to_struct.get(mid, -1)
-			var fp := Vector2i(1, 1)
-			if s_idx != -1:
-				fp = structures[s_idx].footprint
-				var refund := ceili(structures[s_idx].price / 2.0)
-				map.cash += refund
-				update_cash()
-			gridmap.set_cell_item(anchor, -1)
-			var off_x: int = (fp.x - 1) / 2
-			var off_z: int = (fp.y - 1) / 2
-			for dx in range(fp.x):
-				for dz in range(fp.y):
-					var cell := Vector3i(anchor.x - off_x + dx, anchor.y, anchor.z - off_z + dz)
-					_multi_cell_anchor.erase(cell)
-					if terrain_gridmap:
-						var tile := _get_terrain_tile(cell.x, cell.z)
-						if tile != -1:
-							terrain_gridmap.set_cell_item(cell, tile)
-			removed = true
+		elif top["type"] == "gridmap":
+			var gm: GridMap = top["gm"]
+			var cell: Vector3i = top["cell"]
+			var mid: int = top["mid"]
+			var layer_num: int = top["layer"]
+			var lookup: Dictionary = top["lookup"]
+
+			if layer_num == 0:
+				# Floor tile — handle multi-cell footprint
+				var anchor: Vector3i = _multi_cell_anchor.get(cell, cell) as Vector3i
+				mid = gm.get_cell_item(anchor)
+				if mid == -1:
+					return
+				var s_idx: int = _base_id_to_struct.get(mid, -1)
+				var fp := Vector2i(1, 1)
+				if s_idx != -1:
+					fp = structures[s_idx].footprint
+					var refund := ceili(structures[s_idx].price / 2.0)
+					map.cash += refund
+					update_cash()
+				gm.set_cell_item(anchor, -1)
+				var off_x: int = (fp.x - 1) / 2
+				var off_z: int = (fp.y - 1) / 2
+				for dx in range(fp.x):
+					for dz in range(fp.y):
+						var fp_cell := Vector3i(anchor.x - off_x + dx, anchor.y, anchor.z - off_z + dz)
+						_multi_cell_anchor.erase(fp_cell)
+						if terrain_gridmap and anchor.y == 0:
+							var tile := _get_terrain_tile(fp_cell.x, fp_cell.z)
+							if tile != -1:
+								terrain_gridmap.set_cell_item(fp_cell, tile)
+				removed = true
+			else:
+				# Wall or item tile
+				gm.set_cell_item(cell, -1)
+				if mid in lookup:
+					var refund := ceili(structures[lookup[mid]].price / 2.0)
+					map.cash += refund
+					update_cash()
+				removed = true
+
 		if removed:
+			# Check if we demolished a required item
+			if _has_stairs and gx == _stairs_position.x and gz == _stairs_position.z:
+				_has_stairs = false
+				_stairs_position = Vector3i(-999, -999, -999)
+			if _has_trophy and gx == _trophy_position.x and gz == _trophy_position.z:
+				_has_trophy = false
+				_trophy_position = Vector3i(-999, -999, -999)
 			Audio.play("sounds/removal-a.ogg, sounds/removal-b.ogg, sounds/removal-c.ogg, sounds/removal-d.ogg", -20)
 
 # Rotates the 'cursor' 90 degrees
@@ -960,6 +1121,9 @@ func _update_date_display() -> void:
 
 # Get the loot chance for a structure by matching its display name
 func _get_loot_chance(display_name: String) -> float:
+	# Required items are never looted
+	if display_name == REQUIRED_TROPHY_NAME or display_name == REQUIRED_STAIRS_NAME:
+		return 0.0
 	for keyword in LOOT_CHANCES:
 		if display_name.contains(keyword):
 			return LOOT_CHANCES[keyword]
@@ -1255,6 +1419,15 @@ func _compute_dungeon_stats() -> Dictionary:
 func _do_adventurer_visit() -> void:
 	if _visit_pending or _intermission_active:
 		return
+
+	# Check if required items are placed
+	if not _has_stairs:
+		Toast.notify("Place Dungeon Stairs [Req] — adventurers need an entrance!", _WARN_ICON)
+		return
+	if not _has_trophy:
+		Toast.notify("Place the Trophy [Req] — adventurers need a goal!", _WARN_ICON)
+		return
+
 	_visit_pending = true
 
 	# Generate this week's party (uses _next_party if available)
@@ -1295,14 +1468,6 @@ func _start_intermission() -> void:
 		_saved_cam_rot = view_node.camera_rotation
 		_saved_cam_zoom = view_node.zoom
 
-	# Find the center of all walls for orbit target
-	_orbit_center = _compute_dungeon_center()
-
-	# Move camera to orbit position
-	if view_node:
-		view_node.camera_position = _orbit_center
-		view_node.zoom = 25.0  # zoom in a bit for cinematic feel
-
 	# Activate all animated instances — play looping animations during visit
 	for pos in _animated_instances:
 		var instance: Node3D = _animated_instances[pos]
@@ -1324,6 +1489,46 @@ func _start_intermission() -> void:
 
 	# Hide the selector during intermission
 	selector.visible = false
+
+	# Try to start the new walk-through intermission
+	if _has_stairs:
+		_intermission_node = Intermission.new()
+		add_child(_intermission_node)
+		var ok: bool = _intermission_node.setup({
+			"gridmap": gridmap,
+			"decoration_gridmap": decoration_gridmap,
+			"items_gridmap": items_gridmap,
+			"terrain_gridmap": terrain_gridmap,
+			"animated_instances": _animated_instances,
+			"animated_struct_idx": _animated_struct_idx,
+			"structures": structures,
+			"item_id_to_struct": _item_id_to_struct,
+			"deco_id_to_struct": _deco_id_to_struct,
+			"view_node": view_node,
+			"party_type": _current_party_type,
+			"stairs_pos": _stairs_position,
+			"trophy_pos": _trophy_position,
+		})
+		if ok:
+			_intermission_node.finished.connect(_end_intermission)
+			print("[Builder] Walk-through intermission started")
+		else:
+			# Fallback to orbit if pathfinding fails
+			print("[Builder] Walk-through failed — falling back to orbit")
+			_intermission_node.queue_free()
+			_intermission_node = null
+			_start_orbit_fallback()
+	else:
+		# No stairs — use old orbit system
+		_start_orbit_fallback()
+
+
+func _start_orbit_fallback() -> void:
+	_orbit_center = _compute_dungeon_center()
+	if view_node:
+		view_node.camera_position = _orbit_center
+		view_node.zoom = 25.0
+
 
 func _compute_dungeon_center() -> Vector3:
 	# Find the bounding box center of all placed walls
@@ -1351,19 +1556,30 @@ func _compute_dungeon_center() -> Vector3:
 
 	return Vector3((min_x + max_x) / 2.0, 0, (min_z + max_z) / 2.0)
 
+
 func _process_intermission(delta: float) -> void:
 	_intermission_timer += delta
 
-	# Orbit the camera around the dungeon center
-	if view_node:
-		var orbit_speed: float = 36.0  # degrees per second → full rotation in 10s
-		view_node.camera_rotation.y += orbit_speed * delta
+	if _intermission_node != null:
+		# Walk-through handles its own timing and emits finished
+		_intermission_node.process_tick(delta)
+	else:
+		# OLD INTERMISSION — orbit camera around dungeon center
+		if view_node:
+			var orbit_speed: float = 36.0
+			view_node.camera_rotation.y += orbit_speed * delta
+		if _intermission_timer >= INTERMISSION_DURATION:
+			_end_intermission()
 
-	if _intermission_timer >= INTERMISSION_DURATION:
-		_end_intermission()
 
 func _end_intermission() -> void:
 	_intermission_active = false
+
+	# Clean up walk-through node if it exists
+	if _intermission_node != null:
+		if is_instance_valid(_intermission_node):
+			_intermission_node.queue_free()
+		_intermission_node = null
 
 	# Restore camera and unblock input
 	if view_node:
@@ -1560,8 +1776,13 @@ func _do_load(path: String) -> void:
 	# Clear any existing animated instances
 	for pos in _animated_instances.keys():
 		_remove_animated(pos)
+	_has_stairs = false
+	_stairs_position = Vector3i(-999, -999, -999)
+	_has_trophy = false
+	_trophy_position = Vector3i(-999, -999, -999)
 	for cell in map.structures:
-		var gpos := Vector3i(cell.position.x, 0, cell.position.y)
+		var cy: int = cell.pos_y if cell.pos_y != 0 else 0
+		var gpos := Vector3i(cell.position.x, cy, cell.position.y)
 		# Layer 3 = animated scene instance (structure field = struct index)
 		if cell.layer == 3:
 			if cell.structure >= 0 and cell.structure < structures.size():
@@ -1575,8 +1796,18 @@ func _do_load(path: String) -> void:
 		else:
 			target = gridmap
 		target.set_cell_item(gpos, cell.structure, cell.orientation)
-		if cell.layer == 0 and terrain_gridmap:
-			terrain_gridmap.set_cell_item(gpos, -1)
+		# Detect required items on load
+		if cell.layer == 2 and cell.structure in _item_id_to_struct:
+			var s_idx: int = _item_id_to_struct[cell.structure]
+			if s_idx < structures.size():
+				if structures[s_idx].display_name == REQUIRED_STAIRS_NAME:
+					_stairs_position = gpos
+					_has_stairs = true
+				elif structures[s_idx].display_name == REQUIRED_TROPHY_NAME:
+					_trophy_position = gpos
+					_has_trophy = true
+		if cell.layer == 0 and terrain_gridmap and cy == 0:
+			terrain_gridmap.set_cell_item(Vector3i(cell.position.x, 0, cell.position.y), -1)
 			# Rebuild multi-cell footprint tracking for large structures
 			if cell.structure in _base_id_to_struct:
 				var s_idx: int = _base_id_to_struct[cell.structure]
@@ -1615,6 +1846,7 @@ func _do_save() -> void:
 	for cell in gridmap.get_used_cells():
 		var ds := DataStructure.new()
 		ds.position     = Vector2i(cell.x, cell.z)
+		ds.pos_y        = cell.y
 		ds.orientation  = gridmap.get_cell_item_orientation(cell)
 		ds.structure    = gridmap.get_cell_item(cell)
 		ds.layer        = 0
@@ -1623,6 +1855,7 @@ func _do_save() -> void:
 		for cell in decoration_gridmap.get_used_cells():
 			var ds := DataStructure.new()
 			ds.position    = Vector2i(cell.x, cell.z)
+			ds.pos_y       = cell.y
 			ds.orientation = decoration_gridmap.get_cell_item_orientation(cell)
 			ds.structure   = decoration_gridmap.get_cell_item(cell)
 			ds.layer       = 1
@@ -1631,6 +1864,7 @@ func _do_save() -> void:
 		for cell in items_gridmap.get_used_cells():
 			var ds := DataStructure.new()
 			ds.position    = Vector2i(cell.x, cell.z)
+			ds.pos_y       = cell.y
 			ds.orientation = items_gridmap.get_cell_item_orientation(cell)
 			ds.structure   = items_gridmap.get_cell_item(cell)
 			ds.layer       = 2
@@ -1639,6 +1873,7 @@ func _do_save() -> void:
 	for pos in _animated_instances:
 		var ds := DataStructure.new()
 		ds.position    = Vector2i(pos.x, pos.z)
+		ds.pos_y       = pos.y
 		ds.orientation = _animated_orientation.get(pos, 0)
 		ds.structure   = _animated_struct_idx.get(pos, 0)
 		ds.layer       = 3
