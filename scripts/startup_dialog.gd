@@ -56,7 +56,7 @@ func _build_ui() -> void:
 	vbox.add_child(title)
 
 	var subtitle := Label.new()
-	subtitle.text = "Build the ultimate dungeon.\nAdventurers will come to explore — and rate — your creation."
+	subtitle.text = "Build the ultimate dungeon.\nAdventurers will come to explore - and rate - your creation."
 	subtitle.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 	subtitle.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
 	vbox.add_child(subtitle)
@@ -80,9 +80,9 @@ func _build_ui() -> void:
 		slot_label.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 		slot_label.add_theme_font_size_override("font_size", 18)
 		if has_save:
-			slot_label.text = "Slot %d  —  Saved Game" % (i + 1)
+			slot_label.text = "Slot %d - Saved Game" % (i + 1)
 		else:
-			slot_label.text = "Slot %d  —  Empty" % (i + 1)
+			slot_label.text = "Slot %d - Empty" % (i + 1)
 		slot_hbox.add_child(slot_label)
 
 		var new_btn := Button.new()
@@ -93,13 +93,13 @@ func _build_ui() -> void:
 
 		if has_save:
 			var load_btn := Button.new()
-			load_btn.text = "Continue ▶"
+			load_btn.text = "Continue >"
 			load_btn.custom_minimum_size = Vector2(120, 36)
 			load_btn.pressed.connect(_load_save.bind(slot_name))
 			slot_hbox.add_child(load_btn)
 
 			var delete_btn := Button.new()
-			delete_btn.text = "✕"
+			delete_btn.text = "X"
 			delete_btn.tooltip_text = "Delete save"
 			delete_btn.custom_minimum_size = Vector2(36, 36)
 			delete_btn.pressed.connect(_delete_save.bind(slot_name, slot_label, load_btn, delete_btn))
@@ -108,7 +108,7 @@ func _build_ui() -> void:
 	vbox.add_child(HSeparator.new())
 
 	var info := Label.new()
-	info.text = "Map: 150 × 150  •  Starting Gold: 2,000"
+	info.text = "Map: 150 x 150 - Starting Gold: 2,000"
 	info.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 	info.add_theme_color_override("font_color", Color(0.7, 0.7, 0.7))
 	vbox.add_child(info)
@@ -138,6 +138,6 @@ func _delete_save(slot: String, label: Label, load_btn: Button, del_btn: Button)
 		var path: String = "user://" + slot + ".res"
 		if FileAccess.file_exists(path):
 			DirAccess.remove_absolute(ProjectSettings.globalize_path(path))
-	label.text = label.text.split("  —")[0] + "  —  Empty"
+	label.text = label.text.split(" - ")[0] + " - Empty"
 	load_btn.queue_free()
 	del_btn.queue_free()

@@ -1,4 +1,4 @@
-[gd_scene load_steps=20 format=3 uid="uid://vgwrcfy1qawf"]
+[gd_scene load_steps=19 format=3 uid="uid://vgwrcfy1qawf"]
 
 [ext_resource type="Script" uid="uid://76g8ejmdibal" path="res://scripts/builder.gd" id="1_jybm7"]
 [ext_resource type="Environment" uid="uid://jbptgqvstei3" path="res://scenes/main-environment.tres" id="1_yndf3"]
@@ -8,7 +8,6 @@
 [ext_resource type="Script" uid="uid://dec71yx4xpg2c" path="res://scripts/view.gd" id="8_yovpv"]
 
 [ext_resource type="FontFile" uid="uid://d0cxd77jybrcn" path="res://fonts/lilita_one_regular.ttf" id="16_vlub6"]
-[ext_resource type="FontFile" path="res://fonts/FantasqueSansMNerdFont-Regular.ttf" id="34_fantasque"]
 [ext_resource type="Texture2D" uid="uid://bng0d1sou7c8a" path="res://sprites/coin.png" id="17_cjamx"]
 [ext_resource type="Texture2D" uid="uid://ciwbdik3tmxtp" path="res://sprites/instructions.png" id="22_pm3ni"]
 [ext_resource type="Script" path="res://scripts/building_picker.gd" id="25_picker"]
@@ -22,7 +21,7 @@
 [ext_resource type="Script" path="res://scripts/day_cycle.gd" id="33_daycycle"]
 
 [sub_resource type="LabelSettings" id="LabelSettings_q176i"]
-font = ExtResource("34_fantasque")
+font = ExtResource("16_vlub6")
 font_size = 18
 shadow_color = Color(0, 0, 0, 0.392157)
 
@@ -148,7 +147,7 @@ offset_left = 234.0
 offset_top = 8.0
 offset_right = 760.0
 offset_bottom = 36.0
-text = "Year 1  ·  Month 1  ·  Week 1  ·  Day 1"
+text = "Year 1 - Month 1 - Week 1 - Day 1"
 label_settings = SubResource("LabelSettings_q176i")
 
 

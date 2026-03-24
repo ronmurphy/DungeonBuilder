@@ -190,15 +190,15 @@ var _total_visit_gold: int = 0            # lifetime gold earned from visits
 
 const MILESTONE_DEFS: Dictionary = {
 	"first_visit":   "First adventurer visit!",
-	"first_3star":   "First ★★★ rating — Good dungeon!",
-	"first_4star":   "First ★★★★ rating — Great dungeon!",
-	"first_5star":   "First ★★★★★ — LEGENDARY dungeon!",
+	"first_3star":   "First *** rating - Good dungeon!",
+	"first_4star":   "First **** rating - Great dungeon!",
+	"first_5star":   "First ***** - LEGENDARY dungeon!",
 	"visits_10":     "10 visits survived!",
-	"visits_25":     "25 visits — dungeon veteran!",
+	"visits_25":     "25 visits - dungeon veteran!",
 	"gold_1000":     "1,000g earned from adventurers!",
-	"gold_5000":     "5,000g earned — the gold flows!",
+	"gold_5000":     "5,000g earned - the gold flows!",
 	"first_room":    "First enclosed room detected!",
-	"rooms_5":       "5 rooms — proper dungeon layout!",
+	"rooms_5":       "5 rooms - proper dungeon layout!",
 	"all_types":     "Every item type placed!",
 }
 
@@ -1564,7 +1564,7 @@ func _purchase_prefab(theme: String, w: int, h: int) -> void:
 
 	# Create outline preview
 	_create_prefab_outline()
-	Toast.notify("Place your %dx%d mystery room — click to build, right-click to cancel" % [w, h], _SAVE_ICON)
+	Toast.notify("Place your %dx%d mystery room - click to build, right-click to cancel" % [w, h], _SAVE_ICON)
 	print("[Merchant] Purchased prefab: %s (%dx%d)" % [theme, w, h])
 
 
@@ -1646,7 +1646,7 @@ func _check_prefab_clear(gx: int, gz: int) -> bool:
 
 func _place_prefab(gx: int, gz: int) -> void:
 	if not _prefab_valid:
-		Toast.notify("Can't place here — something is in the way!", _WARN_ICON)
+		Toast.notify("Can't place here - something is in the way!", _WARN_ICON)
 		return
 
 	var dungeon_idx: int = _find_struct_by_name("Dungeon Wall")
@@ -1763,7 +1763,7 @@ func _cancel_prefab() -> void:
 	if not _freebuild:
 		map.cash += MERCHANT_PRICE
 		update_cash()
-	Toast.notify("Prefab cancelled — gold refunded", _WARN_ICON)
+	Toast.notify("Prefab cancelled - gold refunded", _WARN_ICON)
 
 
 func _bsp_node(bx1: int, bz1: int, bx2: int, bz2: int) -> Dictionary:
@@ -1980,7 +1980,7 @@ func _update_date_display() -> void:
 	var week   := (d % 28)  / 7  + 1
 	var day    := d % 7 + 1
 	if date_display:
-		date_display.text = "Year %d  ·  Month %d  ·  Week %d  ·  Day %d" % [year, month, week, day]
+		date_display.text = "Year %d - Month %d - Week %d - Day %d" % [year, month, week, day]
 	# Update week-progress clock (5 frames over 7 days)
 	if week_clock:
 		var frame := int(float(d % 7) / 7.0 * 5.0)
@@ -2206,7 +2206,7 @@ func _check_milestone(key: String) -> void:
 	_milestones_earned[key] = true
 	# Delay milestone toast so it doesn't overlap visit toasts
 	get_tree().create_timer(5.0).timeout.connect(
-		func(): Toast.notify("🏆 " + MILESTONE_DEFS[key], _AWARD_ICON))
+		func(): Toast.notify(MILESTONE_DEFS[key], _AWARD_ICON))
 
 
 func _check_visit_milestones(stars: int, total_gold: int, rooms: Array) -> void:
@@ -2352,10 +2352,10 @@ func _do_adventurer_visit() -> void:
 
 	# Check if required items are placed
 	if not _has_stairs:
-		Toast.notify("Place Dungeon Stairs [Req] — adventurers need an entrance!", _WARN_ICON)
+		Toast.notify("Place Dungeon Stairs [Req] - adventurers need an entrance!", _WARN_ICON)
 		return
 	if not _has_trophy:
-		Toast.notify("Place the Trophy [Req] — adventurers need a goal!", _WARN_ICON)
+		Toast.notify("Place the Trophy [Req] - adventurers need a goal!", _WARN_ICON)
 		return
 
 	_visit_pending = true
@@ -2683,14 +2683,14 @@ func _finalize_visit() -> void:
 	var stars: int = stats.get("stars", 1)
 	var star_str: String = ""
 	for i in range(stars):
-		star_str += "★"
+		star_str += "*"
 	for i in range(5 - stars):
-		star_str += "☆"
+		star_str += "-"
 
 	# Build loot summary (e.g. "2× Chest, 3× Coin, 1× Sword")
 	var loot_parts: Array = []
 	for item_name in looted_counts:
-		loot_parts.append("%d× %s" % [looted_counts[item_name], item_name])
+		loot_parts.append("%dx %s" % [looted_counts[item_name], item_name])
 	var loot_summary: String = ", ".join(loot_parts) if not loot_parts.is_empty() else "nothing"
 
 	Toast.notify("%s  Rating: %dg  Loot: %dg  =  %dg total" % [star_str, payout, loot, total], _SAVE_ICON)
@@ -2731,8 +2731,8 @@ func _open_report() -> void:
 		return
 	var stats: Dictionary = _compute_dungeon_stats()
 	# Add next party info for the report's "Next Visitors" section
-	stats["next_party_name"] = _next_party_name if _next_party_name != "" else "—"
-	stats["next_party_type"] = _party_type_label(_next_party_type) if _next_party_type >= 0 else "—"
+	stats["next_party_name"] = _next_party_name if _next_party_name != "" else "-"
+	stats["next_party_type"] = _party_type_label(_next_party_type) if _next_party_type >= 0 else "-"
 	report_panel.show_dungeon_report(stats, _visit_history)
 
 
@@ -2887,7 +2887,7 @@ func _do_save() -> void:
 		if ok:
 			Toast.notify("Game saved!", _SAVE_ICON)
 		else:
-			Toast.notify("Save FAILED — localStorage unavailable!", _SAVE_ICON)
+			Toast.notify("Save FAILED - localStorage unavailable!", _SAVE_ICON)
 	else:
 		ResourceSaver.save(map, Global.save_path())
 		Toast.notify("Game saved!", _SAVE_ICON)

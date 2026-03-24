@@ -114,7 +114,7 @@ func _build_stats_tab(tabs: TabContainer) -> void:
 
 	_add_section_header(vbox, "Score Breakdown")
 	_add_stat_row(vbox, "Size score (tiles / 10)", "size_score")
-	_add_stat_row(vbox, "Variety score (types × 5)", "variety_score")
+	_add_stat_row(vbox, "Variety score (types x 5)", "variety_score")
 	_add_stat_row(vbox, "Danger score (traps + monsters)", "danger_points")
 	_add_stat_row(vbox, "Treasure score (chests, weapons)", "treasure_points")
 	_add_stat_row(vbox, "Atmosphere score (decor)", "atmosphere_points")
@@ -177,7 +177,7 @@ func _add_stat_row(parent: VBoxContainer, label_text: String, key: String) -> vo
 	hbox.add_child(name_lbl)
 
 	var val_lbl := Label.new()
-	val_lbl.text = "—"
+	val_lbl.text = "-"
 	val_lbl.horizontal_alignment = HORIZONTAL_ALIGNMENT_RIGHT
 	val_lbl.custom_minimum_size = Vector2(120, 0)
 	hbox.add_child(val_lbl)
@@ -212,9 +212,9 @@ func show_dungeon_report(stats: Dictionary, visit_history: Array) -> void:
 			var stars: int = stats.get("stars", 1)
 			var star_str: String = ""
 			for i in range(stars):
-				star_str += "★"
+				star_str += "*"
 			for i in range(5 - stars):
-				star_str += "☆"
+				star_str += "-"
 			lbl.text = star_str
 			if stars >= 4:
 				lbl.add_theme_color_override("font_color", Color(0.3, 1.0, 0.3))
@@ -227,9 +227,9 @@ func show_dungeon_report(stats: Dictionary, visit_history: Array) -> void:
 		elif key == "payout":
 			lbl.text = "%dg" % stats.get("payout", 0)
 		elif key == "next_party_name":
-			lbl.text = stats.get("next_party_name", "—")
+			lbl.text = stats.get("next_party_name", "-")
 		elif key == "next_party_type":
-			lbl.text = stats.get("next_party_type", "—")
+			lbl.text = stats.get("next_party_type", "-")
 		else:
 			lbl.text = str(stats.get(key, 0))
 
@@ -274,7 +274,7 @@ func show_dungeon_report(stats: Dictionary, visit_history: Array) -> void:
 
 	if visit_history.is_empty():
 		var empty_lbl := Label.new()
-		empty_lbl.text = "No adventurer visits yet — they arrive every week."
+		empty_lbl.text = "No adventurer visits yet - they arrive every week."
 		empty_lbl.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 		empty_lbl.add_theme_color_override("font_color", Color(0.6, 0.6, 0.6))
 		_history_rows.add_child(empty_lbl)
@@ -309,7 +309,7 @@ func show_dungeon_report(stats: Dictionary, visit_history: Array) -> void:
 			var stars: int = entry.get("stars", 1)
 			var star_str: String = ""
 			for i in range(stars):
-				star_str += "★"
+				star_str += "*"
 
 			var values: Array = [
 				str(entry.get("week", 0)),
@@ -340,7 +340,7 @@ func show_dungeon_report(stats: Dictionary, visit_history: Array) -> void:
 
 	if visit_history.is_empty():
 		var empty_lbl := Label.new()
-		empty_lbl.text = "No loot history yet — adventurers arrive every week."
+		empty_lbl.text = "No loot history yet - adventurers arrive every week."
 		empty_lbl.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 		empty_lbl.add_theme_color_override("font_color", Color(0.6, 0.6, 0.6))
 		_loot_rows.add_child(empty_lbl)
@@ -355,9 +355,9 @@ func show_dungeon_report(stats: Dictionary, visit_history: Array) -> void:
 			week_hdr.add_theme_font_size_override("font_size", 15)
 			week_hdr.add_theme_color_override("font_color", Color(0.7, 0.85, 0.7))
 			if looted.is_empty():
-				week_hdr.text = "Week %d  —  Nothing looted" % week_num
+				week_hdr.text = "Week %d - Nothing looted" % week_num
 			else:
-				week_hdr.text = "Week %d  —  %dg looted" % [week_num, loot_gold]
+				week_hdr.text = "Week %d - %dg looted" % [week_num, loot_gold]
 			_loot_rows.add_child(week_hdr)
 
 			if not looted.is_empty():
@@ -372,7 +372,7 @@ func show_dungeon_report(stats: Dictionary, visit_history: Array) -> void:
 					row.add_child(name_lbl)
 
 					var count_lbl := Label.new()
-					count_lbl.text = "×%d" % looted[item_name]
+					count_lbl.text = "x%d" % looted[item_name]
 					count_lbl.horizontal_alignment = HORIZONTAL_ALIGNMENT_RIGHT
 					count_lbl.custom_minimum_size = Vector2(60, 0)
 					count_lbl.add_theme_font_size_override("font_size", 13)
