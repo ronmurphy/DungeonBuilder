@@ -394,41 +394,14 @@ func _ready():
 
 
 func _setup_font_fallback() -> void:
-	# Add Noto Emoji as a fallback so ★ ☆ 🏆 etc. render everywhere
+	# Add Noto Emoji as a fallback to the Nerd Font for any missing glyphs
+	var nerd_path := "res://fonts/FantasqueSansMNerdFont-Regular.ttf"
 	var emoji_path := "res://fonts/NotoEmoji-Regular.ttf"
-	if not ResourceLoader.exists(emoji_path):
-		push_warning("[Builder] Noto Emoji font not found at %s — emoji may not render" % emoji_path)
-		return
-	var emoji_font: FontFile = load(emoji_path)
-
-	# Add to the main font resource used by LabelSettings in the scene.
-	# Use load() which returns the cached resource instance shared with the scene.
-	var main_font_path := "res://fonts/lilita_one_regular.ttf"
-	if ResourceLoader.exists(main_font_path):
-		var main_font: FontFile = load(main_font_path)
-		if emoji_font not in main_font.fallbacks:
-			main_font.fallbacks.append(emoji_font)
-
-	# Also add to the LabelSettings font directly from existing UI labels,
-	# in case it's a different instance than what load() returns.
-	for label_node in [date_display, cash_display]:
-		if label_node and label_node.label_settings and label_node.label_settings.font:
-			var lbl_font = label_node.label_settings.font
-			if lbl_font is FontFile and emoji_font not in lbl_font.fallbacks:
-				lbl_font.fallbacks.append(emoji_font)
-
-	# Add to ThemeDB fallback font regardless of its type
-	var default_font := ThemeDB.fallback_font
-	if default_font != null:
-		if default_font is FontFile:
-			if emoji_font not in default_font.fallbacks:
-				default_font.fallbacks.append(emoji_font)
-		elif default_font is FontVariation and default_font.base_font is FontFile:
-			if emoji_font not in default_font.base_font.fallbacks:
-				default_font.base_font.fallbacks.append(emoji_font)
-		elif default_font is SystemFont:
-			if emoji_font not in default_font.fallbacks:
-				default_font.fallbacks.append(emoji_font)
+	if ResourceLoader.exists(nerd_path) and ResourceLoader.exists(emoji_path):
+		var nerd_font: FontFile = load(nerd_path)
+		var emoji_font: FontFile = load(emoji_path)
+		if emoji_font not in nerd_font.fallbacks:
+			nerd_font.fallbacks.append(emoji_font)
 
 
 func _process(delta):

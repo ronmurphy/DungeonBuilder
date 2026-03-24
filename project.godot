@@ -129,6 +129,10 @@ zoom_out={
 ]
 }
 
+[gui]
+
+theme/default_font="res://fonts/FantasqueSansMNerdFont-Regular.ttf"
+
 [rendering]
 
 textures/vram_compression/import_etc2_astc=true
