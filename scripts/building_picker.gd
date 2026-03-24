@@ -184,6 +184,8 @@ func _rebuild_structures() -> void:
 		btn.custom_minimum_size = Vector2(0, 48)
 		btn.alignment = HORIZONTAL_ALIGNMENT_LEFT
 		btn.flat = (i != selected_index)
+		if s.display_name.contains("[Req]"):
+			btn.add_theme_color_override("font_color", Color(1.0, 0.3, 0.3))
 		if s.thumbnail:
 			btn.icon = s.thumbnail
 			btn.icon_alignment = HORIZONTAL_ALIGNMENT_LEFT
