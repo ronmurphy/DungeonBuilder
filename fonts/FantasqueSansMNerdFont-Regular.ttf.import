@@ -30,7 +30,50 @@ Fallbacks=null
 fallbacks=[]
 Compress=null
 compress=true
-preload=[]
+preload=[{
+"chars": null,
+"glyphs": "",
+"ranges": [{
+"end": 126,
+"start": 32
+}, {
+"end": 255,
+"start": 160
+}, {
+"end": 8303,
+"start": 8192
+}, {
+"end": 8231,
+"start": 8208
+}, {
+"end": 8226,
+"start": 8226
+}, {
+"end": 8364,
+"start": 8364
+}, {
+"end": 9599,
+"start": 9472
+}, {
+"end": 9727,
+"start": 9632
+}, {
+"end": 9734,
+"start": 9733
+}, {
+"end": 10007,
+"start": 10003
+}, {
+"end": 128511,
+"start": 127744
+}, {
+"end": 63743,
+"start": 57344
+}, {
+"end": 1048573,
+"start": 983040
+}]
+}]
 language_support={}
 script_support={}
 opentype_features={}

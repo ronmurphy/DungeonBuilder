@@ -30,7 +30,32 @@ Fallbacks=null
 fallbacks=[]
 Compress=null
 compress=true
-preload=[]
+preload=[{
+"chars": null,
+"glyphs": "",
+"ranges": [{
+"end": 8205,
+"start": 8205
+}, {
+"end": 8265,
+"start": 8252
+}, {
+"end": 9983,
+"start": 9728
+}, {
+"end": 10175,
+"start": 9985
+}, {
+"end": 128511,
+"start": 127744
+}, {
+"end": 128767,
+"start": 128512
+}, {
+"end": 129535,
+"start": 129280
+}]
+}]
 language_support={}
 script_support={}
 opentype_features={}
