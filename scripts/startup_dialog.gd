@@ -3,7 +3,27 @@ extends Node
 
 func _ready() -> void:
 	Global.map_seed = Time.get_ticks_msec() + randi()
+	_setup_emoji_fallback()
 	_build_ui()
+
+
+func _setup_emoji_fallback() -> void:
+	var emoji_path := "res://fonts/NotoEmoji-Regular.ttf"
+	if not ResourceLoader.exists(emoji_path):
+		return
+	var emoji_font: FontFile = load(emoji_path)
+	# Add to the main game font so all labels pick it up
+	var main_path := "res://fonts/lilita_one_regular.ttf"
+	if ResourceLoader.exists(main_path):
+		var main_font: FontFile = load(main_path)
+		if emoji_font not in main_font.fallbacks:
+			main_font.fallbacks.append(emoji_font)
+	# Add to ThemeDB so dynamically created labels also get it
+	var default_font := ThemeDB.fallback_font
+	if default_font is FontFile and emoji_font not in default_font.fallbacks:
+		default_font.fallbacks.append(emoji_font)
+	elif default_font is SystemFont and emoji_font not in default_font.fallbacks:
+		default_font.fallbacks.append(emoji_font)
 
 
 func _build_ui() -> void:
