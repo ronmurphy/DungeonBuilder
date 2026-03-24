@@ -101,20 +101,32 @@ const STAR_THRESHOLDS: Array[int] = [0, 50, 100, 200, 350]
 const STAR_PAYOUTS: Array[int]    = [50, 125, 250, 400, 600]
 
 # ── Adventurer Party Types ────────────────────────────────────────────────────
-enum PartyType { WARRIORS, ROGUES, SCHOLARS }
+enum PartyType { WARRIORS, ROGUES, SCHOLARS, PALADINS, RAIDERS, MYSTICS, MERCENARIES, RAGTAG }
+
+const PARTY_TYPE_COUNT: int = 8
 
 # Score multipliers per party type → category
 const PARTY_MULTIPLIERS: Dictionary = {
-	PartyType.WARRIORS: { "danger": 2.0, "treasure": 0.8, "atmosphere": 0.5 },
-	PartyType.ROGUES:   { "danger": 0.8, "treasure": 2.0, "atmosphere": 0.8 },
-	PartyType.SCHOLARS: { "danger": 0.5, "treasure": 0.8, "atmosphere": 2.0 },
+	PartyType.WARRIORS:     { "danger": 2.0, "treasure": 0.8, "atmosphere": 0.5 },
+	PartyType.ROGUES:       { "danger": 0.8, "treasure": 2.0, "atmosphere": 0.8 },
+	PartyType.SCHOLARS:     { "danger": 0.5, "treasure": 0.8, "atmosphere": 2.0 },
+	PartyType.PALADINS:     { "danger": 1.5, "treasure": 0.5, "atmosphere": 1.5 },
+	PartyType.RAIDERS:      { "danger": 1.0, "treasure": 2.5, "atmosphere": 0.3 },
+	PartyType.MYSTICS:      { "danger": 0.8, "treasure": 0.5, "atmosphere": 2.5 },
+	PartyType.MERCENARIES:  { "danger": 1.2, "treasure": 1.2, "atmosphere": 1.2 },
+	PartyType.RAGTAG:       { "danger": 1.0, "treasure": 1.0, "atmosphere": 1.0 },
 }
 
 # Loot chance multipliers per party type
 const PARTY_LOOT_MULT: Dictionary = {
-	PartyType.WARRIORS: 0.7,   # warriors care about glory, not loot
-	PartyType.ROGUES:   1.5,   # rogues grab everything they can
-	PartyType.SCHOLARS: 0.4,   # scholars observe, rarely take things
+	PartyType.WARRIORS:     0.7,   # warriors care about glory, not loot
+	PartyType.ROGUES:       1.5,   # rogues grab everything they can
+	PartyType.SCHOLARS:     0.4,   # scholars observe, rarely take things
+	PartyType.PALADINS:     0.5,   # honorable — won't loot chests
+	PartyType.RAIDERS:      2.0,   # take everything not nailed down
+	PartyType.MYSTICS:      0.3,   # fascinated by traps, ignore treasure
+	PartyType.MERCENARIES:  1.0,   # balanced — take what's fair
+	PartyType.RAGTAG:       1.0,   # unpredictable
 }
 
 # Party names that hint at their type
@@ -135,6 +147,36 @@ const SCHOLAR_NAMES: Array[String] = [
 	"Sage Aldric's Order", "The Learned Few", "The Crystal Scribes",
 	"The Arcane Society", "Elder's Expedition", "The Lore Keepers",
 	"The Tome Bearers", "Merlin's Apprentices", "The Stargazers",
+]
+const PALADIN_NAMES: Array[String] = [
+	"The Holy Vanguard", "Order of the Dawn", "The Silver Crusade",
+	"Lightbringer's Host", "The Radiant Shield", "Templar's Oath",
+	"The Hallowed Blades", "Sunsworn Company", "The Golden Aegis",
+	"The Righteous Few", "Dawnwatch Sentinels", "The Sacred Flame",
+]
+const RAIDER_NAMES: Array[String] = [
+	"The Bloodhounds", "Ironjaw's Reavers", "The Plunder Pack",
+	"Grakkus's Horde", "The Warg Riders", "Skull Crushers",
+	"The Rust Fangs", "Gutter's Brutes", "The Loot Goblins",
+	"Smash & Grab Co.", "The Chain Gang", "Pillage Inc.",
+]
+const MYSTIC_NAMES: Array[String] = [
+	"The Veil Walkers", "Circle of Shadows", "The Third Eye",
+	"Whisperwind Coven", "The Ashen Seers", "Twilight Augurs",
+	"The Runed Hand", "Eldritch Seekers", "The Fatebound",
+	"The Grimoire Guild", "Nethermancers", "The Pale Circle",
+]
+const MERCENARY_NAMES: Array[String] = [
+	"Swords for Hire", "The Free Company", "Goldclaw's Band",
+	"The Sellswords", "Copper & Steel Co.", "The Hired Axes",
+	"No Questions Asked", "The Coin Blades", "Fortune's Edge",
+	"The Contract Keepers", "Blade & Bargain", "The Odd Jobs",
+]
+const RAGTAG_NAMES: Array[String] = [
+	"The Misfits", "Band of Nobodies", "The Unlikely Heroes",
+	"Last Pick Party", "The Leftovers", "Chaos Crew",
+	"The Wandering Weirdos", "Fate's Rejects", "The Lucky Fools",
+	"Oops All Adventurers", "The Hot Mess", "Plan B Party",
 ]
 
 var _current_party_type: int = PartyType.WARRIORS
@@ -178,12 +220,14 @@ const ROOM_THEMES: Dictionary = {
 }
 # Party-type theme affinity — multiplier on the theme bonus
 const PARTY_THEME_AFFINITY: Dictionary = {
-	# Warriors love Barracks, hate Gallery
-	PartyType.WARRIORS: { "Barracks": 2.0, "Armory": 1.5, "Trap Room": 1.2, "Treasury": 0.8, "Gallery": 0.5 },
-	# Rogues love Treasury, like Trap Rooms (to disarm)
-	PartyType.ROGUES:   { "Treasury": 2.0, "Trap Room": 1.5, "Armory": 1.0, "Barracks": 0.8, "Gallery": 0.5 },
-	# Scholars love Gallery, study everything
-	PartyType.SCHOLARS: { "Gallery": 2.5, "Trap Room": 1.5, "Treasury": 1.0, "Armory": 1.0, "Barracks": 0.8 },
+	PartyType.WARRIORS:     { "Barracks": 2.0, "Armory": 1.5, "Trap Room": 1.2, "Treasury": 0.8, "Gallery": 0.5 },
+	PartyType.ROGUES:       { "Treasury": 2.0, "Trap Room": 1.5, "Armory": 1.0, "Barracks": 0.8, "Gallery": 0.5 },
+	PartyType.SCHOLARS:     { "Gallery": 2.5, "Trap Room": 1.5, "Treasury": 1.0, "Armory": 1.0, "Barracks": 0.8 },
+	PartyType.PALADINS:     { "Barracks": 1.5, "Gallery": 1.5, "Armory": 1.5, "Trap Room": 0.8, "Treasury": 0.5 },
+	PartyType.RAIDERS:      { "Treasury": 2.5, "Armory": 1.5, "Barracks": 1.0, "Trap Room": 0.8, "Gallery": 0.3 },
+	PartyType.MYSTICS:      { "Trap Room": 2.5, "Gallery": 2.0, "Treasury": 0.8, "Armory": 0.5, "Barracks": 0.5 },
+	PartyType.MERCENARIES:  { "Armory": 1.5, "Treasury": 1.5, "Barracks": 1.2, "Trap Room": 1.0, "Gallery": 0.8 },
+	PartyType.RAGTAG:       { "Barracks": 1.0, "Armory": 1.0, "Treasury": 1.0, "Trap Room": 1.0, "Gallery": 1.0 },
 }
 
 # ── Travelling Merchant — prefab themed rooms ────────────────────────────────
@@ -273,6 +317,9 @@ var _freebuild: bool = false
 const _FREEBUILD_COLOR: Color = Color(0.3, 0.6, 1.0)  # blue tint for gold display
 var _normal_cash_color: Color = Color.WHITE             # stored on ready
 
+# Next party display label (created in _ready, shown to right of date)
+var _next_party_label: Label = null
+
 func _ready():
 
 	_load_structures()
@@ -332,6 +379,18 @@ func _ready():
 	update_structure()
 	update_cash()
 	_update_date_display()
+
+	# Create "Next:" party label to the right of the date display
+	if date_display:
+		_next_party_label = Label.new()
+		_next_party_label.name = "NextParty"
+		_next_party_label.position = Vector2(date_display.position.x + date_display.size.x + 20, date_display.position.y)
+		_next_party_label.size = Vector2(400, 28)
+		if date_display.label_settings:
+			_next_party_label.label_settings = date_display.label_settings.duplicate()
+		_next_party_label.modulate = Color(0.9, 0.8, 0.6)  # warm gold tint
+		date_display.get_parent().add_child(_next_party_label)
+		_update_next_party_display()
 
 
 func _setup_font_fallback() -> void:
@@ -1956,33 +2015,62 @@ func _get_rating_points(display_name: String) -> int:
 # ── Party generation ──────────────────────────────────────────────────────────
 
 func _generate_party() -> void:
-	_current_party_type = _next_party_type if _next_party_type >= 0 else randi() % 3
+	_current_party_type = _next_party_type if _next_party_type >= 0 else randi() % PARTY_TYPE_COUNT
 	_current_party_name = _next_party_name if _next_party_name != "" else _random_party_name(_current_party_type)
 	_roll_next_party()
 
 
 func _roll_next_party() -> void:
-	_next_party_type = randi() % 3
+	_next_party_type = randi() % PARTY_TYPE_COUNT
 	_next_party_name = _random_party_name(_next_party_type)
+	_update_next_party_display()
 
 
 func _random_party_name(party_type: int) -> String:
 	match party_type:
-		PartyType.WARRIORS:
-			return WARRIOR_NAMES[randi() % WARRIOR_NAMES.size()]
-		PartyType.ROGUES:
-			return ROGUE_NAMES[randi() % ROGUE_NAMES.size()]
-		PartyType.SCHOLARS:
-			return SCHOLAR_NAMES[randi() % SCHOLAR_NAMES.size()]
+		PartyType.WARRIORS:    return WARRIOR_NAMES[randi() % WARRIOR_NAMES.size()]
+		PartyType.ROGUES:      return ROGUE_NAMES[randi() % ROGUE_NAMES.size()]
+		PartyType.SCHOLARS:    return SCHOLAR_NAMES[randi() % SCHOLAR_NAMES.size()]
+		PartyType.PALADINS:    return PALADIN_NAMES[randi() % PALADIN_NAMES.size()]
+		PartyType.RAIDERS:     return RAIDER_NAMES[randi() % RAIDER_NAMES.size()]
+		PartyType.MYSTICS:     return MYSTIC_NAMES[randi() % MYSTIC_NAMES.size()]
+		PartyType.MERCENARIES: return MERCENARY_NAMES[randi() % MERCENARY_NAMES.size()]
+		PartyType.RAGTAG:      return RAGTAG_NAMES[randi() % RAGTAG_NAMES.size()]
 	return "Unknown Party"
 
 
 func _party_type_label(party_type: int) -> String:
 	match party_type:
-		PartyType.WARRIORS: return "Warriors"
-		PartyType.ROGUES:   return "Rogues"
-		PartyType.SCHOLARS: return "Scholars"
+		PartyType.WARRIORS:    return "Warriors"
+		PartyType.ROGUES:      return "Rogues"
+		PartyType.SCHOLARS:    return "Scholars"
+		PartyType.PALADINS:    return "Paladins"
+		PartyType.RAIDERS:     return "Raiders"
+		PartyType.MYSTICS:     return "Mystics"
+		PartyType.MERCENARIES: return "Mercenaries"
+		PartyType.RAGTAG:      return "Rag-tag"
 	return "Adventurers"
+
+
+func _update_next_party_display() -> void:
+	if _next_party_label == null:
+		return
+	if _next_party_type >= 0 and _next_party_name != "":
+		_next_party_label.text = "Next:  %s (%s)" % [_next_party_name, _party_type_label(_next_party_type)]
+	else:
+		_next_party_label.text = ""
+
+# Texture variation index per party type (0=base, 1=var-a, 2=var-b, 3=var-c, 4=var-d)
+const PARTY_PALETTE: Dictionary = {
+	PartyType.WARRIORS:    0,  # base colors
+	PartyType.ROGUES:      0,  # base colors
+	PartyType.SCHOLARS:    0,  # base colors
+	PartyType.PALADINS:    1,  # variation-a
+	PartyType.RAIDERS:     2,  # variation-b
+	PartyType.MYSTICS:     3,  # variation-c
+	PartyType.MERCENARIES: 4,  # variation-d
+	PartyType.RAGTAG:     -1,  # -1 = random per member
+}
 
 # ── Room detection ────────────────────────────────────────────────────────────
 
@@ -2392,6 +2480,17 @@ func _start_intermission() -> void:
 		_intermission_node = Intermission.new()
 		_intermission_node.duration = _selected_duration
 		add_child(_intermission_node)
+		# Determine palette for this party type
+		var palette_idx: int = PARTY_PALETTE.get(_current_party_type, 0)
+		var palette_tex: Texture2D = null
+		if palette_idx > 0:
+			# Load variation texture from the dungeon character model's texture dir
+			var letters := ["a", "b", "c", "d"]
+			if palette_idx - 1 < letters.size():
+				var path: String = "res://models/Mini Dungeon/Models/Textures/variation-%s.png" % letters[palette_idx - 1]
+				if ResourceLoader.exists(path):
+					palette_tex = load(path)
+
 		var ok: bool = _intermission_node.setup({
 			"nav_walls": _nav_walls,
 			"nav_passable": _nav_passable,
@@ -2406,6 +2505,8 @@ func _start_intermission() -> void:
 			"trophy_pos": _trophy_position,
 			"loot_chances": LOOT_CHANCES,
 			"loot_mult": PARTY_LOOT_MULT.get(_current_party_type, 1.0),
+			"palette_tex": palette_tex,
+			"palette_idx": palette_idx,
 		})
 		if ok:
 			_intermission_node.finished.connect(_end_intermission)
@@ -2674,6 +2775,7 @@ func _do_load(path: String) -> void:
 	_next_party_name = map.next_party_name
 	if _next_party_type < 0:
 		_roll_next_party()  # generate first party if save predates this feature
+	_update_next_party_display()
 	_multi_cell_anchor.clear()
 	generate_terrain()
 	gridmap.clear()

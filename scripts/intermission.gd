@@ -17,22 +17,23 @@ const PARTY_SPACING: float = 0.6      # distance between party members along pat
 const CAMERA_OFFSET: Vector3 = Vector3(0, 4, 4)  # camera offset behind/above leader
 const CAMERA_ZOOM: float = 20.0
 
+# Character model paths
+const MDL_HUMAN: String   = "res://models/Mini Dungeon/Models/GLB format/character-human.glb"
+const MDL_ORC: String     = "res://models/Mini Dungeon/Models/GLB format/character-orc.glb"
+const MDL_SOLDIER: String = "res://models/Mini Arena/Models/GLB format/character-soldier.glb"
+
 # Party model scenes — picked based on party type
-const WARRIOR_MODELS: Array[String] = [
-	"res://models/Mini Arena/Models/GLB format/character-soldier.glb",
-	"res://models/Mini Arena/Models/GLB format/character-soldier.glb",
-	"res://models/Mini Dungeon/Models/GLB format/character-human.glb",
-]
-const ROGUE_MODELS: Array[String] = [
-	"res://models/Mini Dungeon/Models/GLB format/character-human.glb",
-	"res://models/Mini Dungeon/Models/GLB format/character-human.glb",
-	"res://models/Mini Dungeon/Models/GLB format/character-human.glb",
-]
-const SCHOLAR_MODELS: Array[String] = [
-	"res://models/Mini Dungeon/Models/GLB format/character-human.glb",
-	"res://models/Mini Arena/Models/GLB format/character-soldier.glb",
-	"res://models/Mini Dungeon/Models/GLB format/character-human.glb",
-]
+const WARRIOR_MODELS: Array[String]     = [MDL_SOLDIER, MDL_SOLDIER, MDL_HUMAN]
+const ROGUE_MODELS: Array[String]       = [MDL_HUMAN, MDL_HUMAN, MDL_HUMAN]
+const SCHOLAR_MODELS: Array[String]     = [MDL_HUMAN, MDL_SOLDIER, MDL_HUMAN]
+const PALADIN_MODELS: Array[String]     = [MDL_SOLDIER, MDL_SOLDIER, MDL_SOLDIER]
+const RAIDER_MODELS: Array[String]      = [MDL_ORC, MDL_ORC, MDL_HUMAN]
+const MYSTIC_MODELS: Array[String]      = [MDL_HUMAN, MDL_HUMAN, MDL_ORC]
+const MERCENARY_MODELS: Array[String]   = [MDL_SOLDIER, MDL_ORC, MDL_HUMAN]
+const RAGTAG_MODELS: Array[String]      = [MDL_HUMAN, MDL_ORC, MDL_SOLDIER]
+
+# All available models for random selection (rag-tag)
+const ALL_MODELS: Array[String] = [MDL_HUMAN, MDL_ORC, MDL_SOLDIER]
 
 # Character animations
 const WALK_ANIM: String = "walk"
@@ -65,7 +66,9 @@ var _pause_timer: float = 0.0
 var _view_node: Node3D               # camera pivot
 var _poi_set: Dictionary = {}        # Vector3i -> String (point of interest type: "chest", "trap", "monster")
 var _visited_pois: Dictionary = {}   # Vector3i -> true (already interacted with)
-var _party_type: int = 0             # 0=Warriors, 1=Rogues, 2=Scholars
+var _party_type: int = 0             # PartyType enum from builder
+var _palette_tex: Texture2D = null   # texture override for palette swap (null = base)
+var _palette_idx: int = 0            # 0=base, 1-4=variation, -1=random per member
 
 # Lighting
 var _column_lights: Array[OmniLight3D] = []  # lights placed at columns
@@ -99,6 +102,8 @@ func setup(params: Dictionary) -> bool:
 	_view_node = params.get("view_node")
 	var party_type: int = params.get("party_type", 0)
 	_party_type = party_type
+	_palette_tex = params.get("palette_tex")
+	_palette_idx = params.get("palette_idx", 0)
 	_loot_chances = params.get("loot_chances", {})
 	_loot_mult = params.get("loot_mult", 1.0)
 	var stairs_pos = params.get("stairs_pos")  # Vector3i or null
@@ -265,65 +270,83 @@ func setup(params: Dictionary) -> bool:
 					_poi_set[poi_cell] = "treasure"
 
 	# ── Party-specific waypoint routing ──────────────────────────────────────
-	# Warriors:  hunt monsters first, then trophy, then exit
-	# Rogues:    seek treasure/chests first, then trophy, then exit
-	# Scholars:  explore every reachable corner, then trophy, then exit
 	var waypoints: Array[Vector3i] = []  # intermediate stops between stairs and trophy
+
+	# Helper lambdas for common POI gathering
+	var _gather_pois := func(types: Array) -> Array[Vector3i]:
+		var result: Array[Vector3i] = []
+		for poi_cell in _poi_set:
+			if _poi_set[poi_cell] in types:
+				if poi_cell in walkable:
+					result.append(poi_cell)
+		result.sort_custom(func(a, b):
+			return stairs_v3i.distance_squared_to(a) < stairs_v3i.distance_squared_to(b))
+		return result
+
+	var _gather_corners := func() -> Array[Vector3i]:
+		var min_x_cell := stairs_v3i
+		var max_x_cell := stairs_v3i
+		var min_z_cell := stairs_v3i
+		var max_z_cell := stairs_v3i
+		for cell in walkable:
+			var pid: int = walkable[cell]
+			var test := astar.get_point_path(stairs_id, pid)
+			if test.is_empty():
+				continue
+			if cell.x < min_x_cell.x: min_x_cell = cell
+			if cell.x > max_x_cell.x: max_x_cell = cell
+			if cell.z < min_z_cell.z: min_z_cell = cell
+			if cell.z > max_z_cell.z: max_z_cell = cell
+		var result: Array[Vector3i] = []
+		for target in [min_z_cell, max_x_cell, max_z_cell, min_x_cell]:
+			if target != stairs_v3i and target != trophy_v3i:
+				if target not in result:
+					result.append(target)
+		return result
 
 	match party_type:
 		0:  # Warriors — hunt monsters
-			var monster_pois: Array[Vector3i] = []
-			for poi_cell in _poi_set:
-				if _poi_set[poi_cell] == "monster":
-					if poi_cell in walkable:
-						monster_pois.append(poi_cell)
-			# Sort by distance from stairs so they visit nearest first
-			monster_pois.sort_custom(func(a, b):
-				return stairs_v3i.distance_squared_to(a) < stairs_v3i.distance_squared_to(b))
-			waypoints = monster_pois
+			waypoints = _gather_pois.call(["monster"])
 			print("[Intermission] Warriors hunting %d monsters" % waypoints.size())
 
 		1:  # Rogues — seek treasure and chests
-			var loot_pois: Array[Vector3i] = []
-			for poi_cell in _poi_set:
-				if _poi_set[poi_cell] in ["chest", "treasure"]:
-					if poi_cell in walkable:
-						loot_pois.append(poi_cell)
-			# Sort by distance from stairs
-			loot_pois.sort_custom(func(a, b):
-				return stairs_v3i.distance_squared_to(a) < stairs_v3i.distance_squared_to(b))
-			waypoints = loot_pois
+			waypoints = _gather_pois.call(["chest", "treasure"])
 			print("[Intermission] Rogues seeking %d treasure spots" % waypoints.size())
 
 		2:  # Scholars — explore every corner of the dungeon
-			# Find the farthest reachable corners/extremes to visit
-			var explore_targets: Array[Vector3i] = []
-			# Gather the 4 extreme walkable cells (min-x, max-x, min-z, max-z)
-			var min_x_cell := stairs_v3i
-			var max_x_cell := stairs_v3i
-			var min_z_cell := stairs_v3i
-			var max_z_cell := stairs_v3i
-			for cell in walkable:
-				# Only consider cells reachable from stairs
-				var pid: int = walkable[cell]
-				var test := astar.get_point_path(stairs_id, pid)
-				if test.is_empty():
-					continue
-				if cell.x < min_x_cell.x:
-					min_x_cell = cell
-				if cell.x > max_x_cell.x:
-					max_x_cell = cell
-				if cell.z < min_z_cell.z:
-					min_z_cell = cell
-				if cell.z > max_z_cell.z:
-					max_z_cell = cell
-			# Visit extremes that aren't the stairs or trophy themselves
-			for target in [min_z_cell, max_x_cell, max_z_cell, min_x_cell]:
-				if target != stairs_v3i and target != trophy_v3i:
-					if target not in explore_targets:
-						explore_targets.append(target)
-			waypoints = explore_targets
+			waypoints = _gather_corners.call()
 			print("[Intermission] Scholars exploring %d corners" % waypoints.size())
+
+		3:  # Paladins — hunt monsters, skip traps (honorable)
+			waypoints = _gather_pois.call(["monster"])
+			print("[Intermission] Paladins smiting %d monsters" % waypoints.size())
+
+		4:  # Raiders — loot everything: chests, treasure, AND monsters
+			waypoints = _gather_pois.call(["chest", "treasure", "monster"])
+			print("[Intermission] Raiders pillaging %d targets" % waypoints.size())
+
+		5:  # Mystics — visit traps first, then explore corners
+			var trap_pois: Array[Vector3i] = _gather_pois.call(["trap"])
+			var corners: Array[Vector3i] = _gather_corners.call()
+			waypoints = trap_pois
+			for c in corners:
+				if c not in waypoints:
+					waypoints.append(c)
+			print("[Intermission] Mystics studying %d traps + %d corners" % [trap_pois.size(), corners.size()])
+
+		6:  # Mercenaries — balanced: visit a mix of everything
+			var all_pois: Array[Vector3i] = _gather_pois.call(["monster", "chest", "treasure", "trap"])
+			waypoints = all_pois
+			print("[Intermission] Mercenaries checking %d points of interest" % waypoints.size())
+
+		7:  # Rag-tag — random behavior: pick one of the existing strategies
+			var roll: int = randi() % 4
+			match roll:
+				0: waypoints = _gather_pois.call(["monster"])
+				1: waypoints = _gather_pois.call(["chest", "treasure"])
+				2: waypoints = _gather_corners.call()
+				3: waypoints = _gather_pois.call(["monster", "chest", "treasure", "trap"])
+			print("[Intermission] Rag-tag party wandering (%d waypoints)" % waypoints.size())
 
 	# ── Build the full path: stairs → [waypoints] → trophy → stairs ──────
 	# Filter waypoints to only those reachable from stairs
@@ -572,35 +595,55 @@ func _interact_with_poi(cell: Vector3i, poi_type: String) -> void:
 	match poi_type:
 		"chest":
 			_trigger_poi_animation(cell, "open")
-			if _party_type == 1:  # Rogues — all rush to loot
-				_pause_timer = INTERACTION_PAUSE * 1.5  # take their time looting
+			if _party_type == 3:  # Paladins — honorable, only leader inspects
+				_play_member_anim(leader, IDLE_ANIM)
+			elif _party_type in [1, 4]:  # Rogues / Raiders — all rush to loot
+				_pause_timer = INTERACTION_PAUSE * 1.5
 				for member in _party:
 					_play_member_anim(member, PICKUP_ANIM)
 			else:
 				_play_member_anim(leader, PICKUP_ANIM)
 		"trap":
 			_trigger_poi_animation(cell, "open-close")
-			if _party_type == 0:  # Warriors — jump over bravely
+			if _party_type == 3:  # Paladins — stride past, ignore traps
+				_paused = false
+				_pause_timer = 0.0
+				return
+			elif _party_type == 5:  # Mystics — fascinated, all crouch to study
+				_pause_timer = INTERACTION_PAUSE * 2.0
+				for member in _party:
+					_play_member_anim(member, "crouch")
+			elif _party_type in [0, 6]:  # Warriors / Mercenaries — jump over
 				_play_member_anim(leader, JUMP_ANIM)
 			elif _party_type == 2:  # Scholars — crouch to examine
 				_play_member_anim(leader, "crouch")
-				_pause_timer = INTERACTION_PAUSE * 1.5  # study it
-			else:  # Rogues — nimble dodge
+				_pause_timer = INTERACTION_PAUSE * 1.5
+			else:  # Rogues, Raiders, Rag-tag — nimble dodge
 				_play_member_anim(leader, JUMP_ANIM)
 		"monster":
-			if _party_type == 0:  # Warriors — everyone fights!
-				_pause_timer = INTERACTION_PAUSE * 2.0  # longer battle
+			if _party_type in [0, 3]:  # Warriors / Paladins — everyone fights!
+				_pause_timer = INTERACTION_PAUSE * 2.0
 				for member in _party:
-					_play_member_anim(member, IDLE_ANIM)  # fighting stance
-			elif _party_type == 2:  # Scholars — observe cautiously
+					_play_member_anim(member, IDLE_ANIM)
+			elif _party_type == 4:  # Raiders — aggressive, short fight
+				_pause_timer = INTERACTION_PAUSE * 1.5
+				for member in _party:
+					_play_member_anim(member, IDLE_ANIM)
+			elif _party_type in [2, 5]:  # Scholars / Mystics — observe cautiously
 				_play_member_anim(leader, "crouch")
 				_pause_timer = INTERACTION_PAUSE * 1.5
-			else:  # Rogues — leader distracts, others idle
+			elif _party_type == 6:  # Mercenaries — efficient takedown
+				_pause_timer = INTERACTION_PAUSE * 1.5
+				_play_member_anim(leader, IDLE_ANIM)
+			else:  # Rogues, Rag-tag — leader distracts
 				_play_member_anim(leader, IDLE_ANIM)
 		"treasure":
-			if _party_type == 1:  # Rogues — everyone grabs loot
+			if _party_type in [1, 4]:  # Rogues / Raiders — everyone grabs loot
 				for member in _party:
 					_play_member_anim(member, PICKUP_ANIM)
+			elif _party_type == 5:  # Mystics — barely interested
+				_pause_timer = INTERACTION_PAUSE * 0.5
+				_play_member_anim(leader, IDLE_ANIM)
 			else:
 				_play_member_anim(leader, PICKUP_ANIM)
 
@@ -634,10 +677,26 @@ func _spawn_party(party_type: int) -> void:
 	_party.clear()
 	var models: Array[String]
 	match party_type:
-		0: models = WARRIOR_MODELS   # Warriors
-		1: models = ROGUE_MODELS     # Rogues
-		2: models = SCHOLAR_MODELS   # Scholars
+		0: models = WARRIOR_MODELS
+		1: models = ROGUE_MODELS
+		2: models = SCHOLAR_MODELS
+		3: models = PALADIN_MODELS
+		4: models = RAIDER_MODELS
+		5: models = MYSTIC_MODELS
+		6: models = MERCENARY_MODELS
+		7: # Rag-tag — random models
+			models = []
+			for _i in range(3):
+				models.append(ALL_MODELS[randi() % ALL_MODELS.size()])
 		_: models = ROGUE_MODELS
+
+	# Load variation textures for random-per-member palette (rag-tag)
+	var _rand_textures: Array[Texture2D] = []
+	if _palette_idx == -1:
+		for letter in ["a", "b", "c", "d"]:
+			var path: String = "res://models/Mini Dungeon/Models/Textures/variation-%s.png" % letter
+			if ResourceLoader.exists(path):
+				_rand_textures.append(load(path))
 
 	var count: int = mini(models.size(), 3)
 	for i in range(count):
@@ -647,6 +706,15 @@ func _spawn_party(party_type: int) -> void:
 		var instance: Node3D = scene.instantiate()
 		instance.position = _path_points[0] if not _path_points.is_empty() else Vector3.ZERO
 		add_child(instance)
+
+		# Apply palette swap
+		var tex: Texture2D = null
+		if _palette_idx == -1 and not _rand_textures.is_empty():
+			tex = _rand_textures[randi() % _rand_textures.size()]
+		elif _palette_tex != null:
+			tex = _palette_tex
+		if tex != null:
+			_apply_palette_to_instance(instance, tex)
 
 		var anim_player: AnimationPlayer = _find_anim_player(instance)
 
@@ -659,6 +727,23 @@ func _spawn_party(party_type: int) -> void:
 				anim_player.play(WALK_ANIM)
 
 		_party.append({ "node": instance, "anim": anim_player })
+
+
+func _apply_palette_to_instance(instance: Node3D, tex: Texture2D) -> void:
+	for child in instance.get_children():
+		if child is MeshInstance3D:
+			var mi := child as MeshInstance3D
+			for surf_idx in mi.mesh.get_surface_count():
+				var mat := mi.mesh.surface_get_material(surf_idx)
+				if mat == null:
+					continue
+				var new_mat := mat.duplicate()
+				if new_mat is StandardMaterial3D:
+					(new_mat as StandardMaterial3D).albedo_texture = tex
+				mi.set_surface_override_material(surf_idx, new_mat)
+		# Recurse into children
+		if child.get_child_count() > 0:
+			_apply_palette_to_instance(child, tex)
 
 
 func _scan_nearby_items() -> void:
